@@ -1,0 +1,4 @@
+CompileFlags:
+  Add: [
+  -I/usr/lib/avr/include,
+]
