@@ -1,4 +1,4 @@
-#define F_CPU 10000000UL
+#define F_CPU 1000000UL
 
 #include <avr/io.h>
 #include <util/delay.h>
@@ -157,17 +157,14 @@ int main(void) {
         DS18B20_write_byte(CMD_CONVERT_TEMP);
 
         // Wait until conversion is complete
-        // while (!DS18B20_read_bit());
-        _delay_ms(750);
-
+        while (!DS18B20_read_bit());
+        
         DS18B20_reset();
         DS18B20_write_byte(CMD_SKIP_ROM);
         DS18B20_write_byte(CMD_READ_SCRATCHPAD);
 
         temperature[0] = DS18B20_read_byte();
         temperature[1] = DS18B20_read_byte();
-
-        DS18B20_reset();
 
         //Store temperature integer digits and decimal digits
         digit = temperature[0] >> 4;
@@ -178,14 +175,18 @@ int main(void) {
         decimal *= THERM_DECIMAL_STEPS_12BIT;
 
         PORTB = ~digitPatterns[digit / 10];
+        HIGH(PORTB, PB0);
         _delay_ms(500);
         PORTB = ~digitPatterns[digit % 10];
+        LOW(PORTB, PB0);
         
         if (digit > 25) {
             HIGH(LED_PORT, LED_PIN);
         } else {
             LOW(LED_PORT, LED_PIN);
         }
+
+        // _delay_ms(750);
     }
 
     return 0;
