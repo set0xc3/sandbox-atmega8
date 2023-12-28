@@ -1,4 +1,4 @@
-#define F_CPU 1000000UL
+#define F_CPU 10000000UL
 
 #include <avr/io.h>
 #include <util/delay.h>
@@ -152,8 +152,6 @@ int main(void) {
     DDRB = 0xFF;
 
     while (1) {
-        LOW(LED_PORT, LED_PIN);
-
         DS18B20_reset();
         DS18B20_write_byte(CMD_SKIP_ROM);
         DS18B20_write_byte(CMD_CONVERT_TEMP);
@@ -183,8 +181,10 @@ int main(void) {
         _delay_ms(500);
         PORTB = ~digitPatterns[digit % 10];
         
-        if (digit > 20) {
+        if (digit > 25) {
             HIGH(LED_PORT, LED_PIN);
+        } else {
+            LOW(LED_PORT, LED_PIN);
         }
     }
 
