@@ -5,17 +5,17 @@
 
 // Define segment patterns for numbers 0 to 9
 const uint8_t digitPatterns[10] = {
-  // a  b  c  d  e  f  g  dp
-  0b11111100, // 0
-  0b01100000, // 1
-  0b11011010, // 2
-  0b11110010, // 3
-  0b01100110, // 4
-  0b10110110, // 5
-  0b10111110, // 6
-  0b11100000, // 7
-  0b11111110, // 8
-  0b11110110  // 9
+    // a  b  c  d  e  f  g  dp
+    0b11111100, // 0
+    0b01100000, // 1
+    0b11011010, // 2
+    0b11110010, // 3
+    0b01100110, // 4
+    0b10110110, // 5
+    0b10111110, // 6
+    0b11100000, // 7
+    0b11111110, // 8
+    0b11110110  // 9
 };
 
 // Макрос для установки пина как вход
@@ -58,136 +58,139 @@ const uint8_t digitPatterns[10] = {
 #define DS_PIN PINC
 #define DS_DQ PC0
 
-uint8_t DS18B20_reset(void) { 
-    
-    uint8_t result_ok = 0;	
-    
-    // Отправка бита
+uint8_t DS18B20_init(void) {
+
+  uint8_t result_ok = 0;
+
+  // Reset
+  {
     LOW(DS_PORT, DS_DQ);
     OUTPUT_MODE(DS_DDR, DS_DQ);
-
     _delay_us(480);
+  }
 
-    // Переключение пина на вход для чтения
+  // Presence
+  {
     INPUT_MODE(DS_DDR, DS_DQ);
-
     _delay_us(60);
+  }
 
-    // Чтение значения пина
+  // Read
+  {
     result_ok = !READ(DS_PIN, DS_DQ); // 0 - OK, 1 - not OK
-
     _delay_us(420);
-    
-    return result_ok;	
+  }
+
+  return result_ok;
 }
 
 void DS18B20_write_bit(uint8_t bit) {
-    // Pull line low
-    LOW(DS_PORT, DS_DQ);
-    OUTPUT_MODE(DS_DDR, DS_DQ);
+  // Pull line low
+  LOW(DS_PORT, DS_DQ);
+  OUTPUT_MODE(DS_DDR, DS_DQ);
 
-    _delay_us(1);
+  _delay_us(1);
 
-    if (bit) {
-        INPUT_MODE(DS_DDR, DS_DQ);
-    }
-
-    _delay_us(60);
-
+  if (bit) {
     INPUT_MODE(DS_DDR, DS_DQ);
+  }
+
+  _delay_us(60);
+
+  INPUT_MODE(DS_DDR, DS_DQ);
 }
 
 void DS18B20_write_byte(uint8_t byte) {
-    for (uint8_t i = 0; i < 8; i += 1) {
-        DS18B20_write_bit(byte & 1);
-        byte >>= 1;
-    }
+  for (uint8_t i = 0; i < 8; i += 1) {
+    DS18B20_write_bit(byte & 1);
+    byte >>= 1;
+  }
 }
 
-uint8_t DS18B20_read_bit(void)
-{
-    uint8_t result_bit = 0;
+uint8_t DS18B20_read_bit(void) {
+  uint8_t result_bit = 0;
 
-    // Pull line low for 1uS
-    LOW(DS_PORT, DS_DQ);
-    OUTPUT_MODE(DS_DDR, DS_DQ);
+  // Pull line low for 1uS
+  LOW(DS_PORT, DS_DQ);
+  OUTPUT_MODE(DS_DDR, DS_DQ);
 
-    _delay_us(1);
+  _delay_us(1);
 
-    // Release line and wait for 14uS
-    INPUT_MODE(DS_DDR, DS_DQ);
+  // Release line and wait for 14uS
+  INPUT_MODE(DS_DDR, DS_DQ);
 
-    _delay_us(14);
+  _delay_us(14);
 
-    // Read line value
-    if (READ(DS_PIN, DS_DQ)) {
-        result_bit = 1;
-    }
+  // Read line value
+  if (READ(DS_PIN, DS_DQ)) {
+    result_bit = 1;
+  }
 
-    _delay_us(45);
+  _delay_us(45);
 
-    return result_bit;
+  return result_bit;
 }
 
 uint8_t DS18B20_read_byte(void) {
-    uint8_t result_n = 0;
+  uint8_t result_n = 0;
 
-    for (uint8_t i = 0; i < 8; i += 1) {
-        result_n >>= 1;
-        result_n |= (DS18B20_read_bit() << 7);
-    }
+  for (uint8_t i = 0; i < 8; i += 1) {
+    result_n >>= 1;
+    result_n |= (DS18B20_read_bit() << 7);
+  }
 
-    return result_n;
+  return result_n;
 }
 
 int main(void) {
-    OUTPUT_MODE(LED_DDR, LED_PIN);
+  OUTPUT_MODE(LED_DDR, LED_PIN);
 
-    // Buffer length must be at least 12bytes long! ["+XXX.XXXX C"]
-    uint8_t temperature[2] = {};
-    int8_t digit = 0;
-    uint16_t decimal = 0;
+  // Buffer length must be at least 12bytes long! ["+XXX.XXXX C"]
+  uint8_t temperature[2] = {};
+  int8_t digit = 0;
+  uint16_t decimal = 0;
 
-    // Set PORTC as output for segments
-    DDRB = 0xFF;
+  // Set PORTC as output for segments
+  DDRB = 0xFF;
 
-    while (1) {
-        DS18B20_reset();
-        DS18B20_write_byte(CMD_SKIP_ROM);
-        DS18B20_write_byte(CMD_CONVERT_TEMP);
+  while (1) {
+    DS18B20_init();
+    DS18B20_write_byte(CMD_SKIP_ROM);
+    DS18B20_write_byte(CMD_CONVERT_TEMP);
 
-        // Wait until conversion is complete
-        while (!DS18B20_read_bit());
-        
-        DS18B20_reset();
-        DS18B20_write_byte(CMD_SKIP_ROM);
-        DS18B20_write_byte(CMD_READ_SCRATCHPAD);
+    // Wait until conversion is complete
+    while (!DS18B20_read_bit())
+      ;
 
-        temperature[0] = DS18B20_read_byte();
-        temperature[1] = DS18B20_read_byte();
+    DS18B20_init();
+    DS18B20_write_byte(CMD_SKIP_ROM);
+    DS18B20_write_byte(CMD_READ_SCRATCHPAD);
 
-        //Store temperature integer digits and decimal digits
-        digit = temperature[0] >> 4;
-        digit |= (temperature[1] & 0x7) << 4;
+    temperature[0] = DS18B20_read_byte();
+    temperature[1] = DS18B20_read_byte();
 
-        //Store decimal digits
-        decimal = temperature[0] & 0xf;
-        decimal *= THERM_DECIMAL_STEPS_12BIT;
+    // Store temperature integer digits and decimal digits
+    digit = temperature[0] >> 4;
+    digit |= (temperature[1] & 0x7) << 4;
 
-        PORTB = ~digitPatterns[digit / 10];
-        HIGH(PORTB, PB0);
-        _delay_ms(500);
-        PORTB = ~digitPatterns[digit % 10];
-        LOW(PORTB, PB0);
-        
-        if (digit > 25) {
-            HIGH(LED_PORT, LED_PIN);
-        } else {
-            LOW(LED_PORT, LED_PIN);
-        }
+    // Store decimal digits
+    decimal = temperature[0] & 0xf;
+    decimal *= THERM_DECIMAL_STEPS_12BIT;
 
-        // _delay_ms(750);
+    PORTB = ~digitPatterns[digit / 10];
+    HIGH(PORTB, PB0);
+    _delay_ms(500);
+    PORTB = ~digitPatterns[digit % 10];
+    LOW(PORTB, PB0);
+
+    if (digit > 25) {
+      HIGH(LED_PORT, LED_PIN);
+    } else {
+      LOW(LED_PORT, LED_PIN);
     }
 
-    return 0;
+    // _delay_ms(750);
+  }
+
+  return 0;
 }
