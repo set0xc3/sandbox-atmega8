@@ -187,6 +187,8 @@ int main(void)
 
       display1_data = digit % 10;
       display2_data = digit / 10;
+
+      _delay_ms(720);
     }
 }
 
