@@ -26,8 +26,8 @@ int main(void)
 
     DDRB = 0xFF;
 
-    HIGH(PORTD, PD0);
-    PORTB = ~digitPatterns[8];
+    // HIGH(PORTD, PD1);
+    // PORTB = ~digitPatterns[8];
 
     for (;;) {
       // for (u8 i = 0; i < 10; i += 1) {
@@ -43,19 +43,20 @@ int main(void)
 
       //   _delay_ms(400);
       // }
+      
 
-      // HIGH(PORTD, PD0);
-      // PORTB = ~digitPatterns[8];
-      // _delay_ms(1);
-      // LOW(PORTD, PD0);
-      // _delay_ms(1);
+      HIGH(PORTD, PD0);
+      PORTB = ~digitPatterns[0];
+      _delay_ms(1);
+      LOW(PORTD, PD0);
+      _delay_ms(1);
 
-    //   HIGH(PORTD, PD1);
-    //   PORTB = ~digitPatterns[8];
-    //   _delay_ms(1);
-    //   LOW(PORTD, PD1);
-    //   _delay_ms(1);
-    // }
+      HIGH(PORTD, PD1);
+      PORTB = ~digitPatterns[8];
+      _delay_ms(1);
+      LOW(PORTD, PD1);
+      _delay_ms(1);
+    }
 
     return 0;
 }

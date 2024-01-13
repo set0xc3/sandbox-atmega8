@@ -1,66 +1,11 @@
 #define F_CPU 1000000UL
 
 #include <avr/io.h>
+#include <avr/interrupt.h>
+
 #include <util/delay.h>
 
 #include "base.h"
-#include "one_wire.h"
-#include "one_wire.c"
-
-// Define segment patterns for numbers 0 to 9
-<<<<<<< HEAD
-const u8 digitPatterns[10] = {
-  // a  b  c  d  e  f  g  dp
-  0b11111100, // 0
-  0b01100000, // 1
-  0b11011010, // 2
-  0b11110010, // 3
-  0b01100110, // 4
-  0b10110110, // 5
-  0b10111110, // 6
-  0b11100000, // 7
-  0b11111110, // 8
-  0b11110110  // 9
-};
-
-int main(void) 
-{
-    OUTPUT_MODE(DDRD, PD0);
-    OUTPUT_MODE(DDRD, PD1);
-
-    // Buffer length must be at least 12bytes long! ["+XXX.XXXX C"]
-    u8 temperature[2] = {};
-    int8_t digit = 0;
-    u16 decimal = 0;
-=======
-const uint8_t digitPatterns[10] = {
-    // a  b  c  d  e  f  g  dp
-    0b11111100, // 0
-    0b01100000, // 1
-    0b11011010, // 2
-    0b11110010, // 3
-    0b01100110, // 4
-    0b10110110, // 5
-    0b10111110, // 6
-    0b11100000, // 7
-    0b11111110, // 8
-    0b11110110  // 9
-};
-
-// Макрос для установки пина как вход
-#define INPUT_MODE(port, pin) ((port) &= ~(1 << (pin)))
-
-// Макрос для установки пина как выход
-#define OUTPUT_MODE(port, pin) ((port) |= (1 << (pin)))
-
-// Макрос для установки пина в состояние "низкий уровень"
-#define LOW(port, pin) ((port) &= ~(1 << (pin)))
-
-// Макрос для установки пина в состояние "высокий уровень"
-#define HIGH(port, pin) ((port) |= (1 << (pin)))
-
-// Макрос для чтения данных с пина
-#define READ(port, pin) ((port & (1 << pin)))
 
 // 1-wire
 
@@ -171,86 +116,95 @@ uint8_t DS18B20_read_byte(void) {
   return result_n;
 }
 
-int main(void) {
-  OUTPUT_MODE(LED_DDR, LED_PIN);
+// Define segment patterns for numbers 0 to 9
 
-  // Buffer length must be at least 12bytes long! ["+XXX.XXXX C"]
-  uint8_t temperature[2] = {};
-  int8_t digit = 0;
-  uint16_t decimal = 0;
->>>>>>> a61472f91c68db2af953208e44d30691717ccb56
+const u8 digitPatterns[10] = {
+  // a  b  c  d  e  f  g  dp
+  0b11111100, // 0
+  0b01100000, // 1
+  0b11011010, // 2
+  0b11110010, // 3
+  0b01100110, // 4
+  0b10110110, // 5
+  0b10111110, // 6
+  0b11100000, // 7
+  0b11111110, // 8
+  0b11110110  // 9
+};
 
-  // Set PORTC as output for segments
-  DDRB = 0xFF;
+// Глобальные переменные для хранения данных на дисплеях
+volatile u8 display1_data = 0;
+volatile u8 display2_data = 0;
 
-<<<<<<< HEAD
-    while (1) {
-        ow_reset();
-        _delay_us(420);
-        ow_write_byte(OW_CMD_SKIP_ROM);
-        ow_write_byte(OW_CMD_CONVERT_TEMP);
+int main(void) 
+{
+    {
+        // Настройка Timer1
+        TCCR1B |= (1 << WGM12) | (1 << CS11) | (1 << CS10); // CTC mode, prescaler = 64
+        OCR1A = 77; // Прерывание каждые 5 мс при F_CPU = 1 MHz и prescaler = 64
+        TIMSK |= (1 << OCIE1A); // Разрешение прерывания от совпадения
 
-        _delay_ms(750);
-        
-        ow_reset();
-        _delay_us(420);
-        ow_write_byte(OW_CMD_SKIP_ROM);
-        ow_write_byte(OW_CMD_READ_SCRATCHPAD);
-
-        temperature[0] = ow_read_byte();
-        temperature[1] = ow_read_byte();
-=======
-  while (1) {
-    DS18B20_init();
-    DS18B20_write_byte(CMD_SKIP_ROM);
-    DS18B20_write_byte(CMD_CONVERT_TEMP);
-
-    // Wait until conversion is complete
-    while (!DS18B20_read_bit())
-      ;
-
-    DS18B20_init();
-    DS18B20_write_byte(CMD_SKIP_ROM);
-    DS18B20_write_byte(CMD_READ_SCRATCHPAD);
->>>>>>> a61472f91c68db2af953208e44d30691717ccb56
-
-    temperature[0] = DS18B20_read_byte();
-    temperature[1] = DS18B20_read_byte();
-
-<<<<<<< HEAD
-        //Store decimal digits
-        decimal = temperature[0] & 0xf;
-        decimal *= OW_THERM_DECIMAL_STEPS_12BIT;
-
-        PORTB = ~digitPatterns[digit / 10];
-        HIGH(PORTB, PB0);
-        _delay_ms(500);
-        PORTB = ~digitPatterns[digit % 10];
-        LOW(PORTB, PB0);
-=======
-    // Store temperature integer digits and decimal digits
-    digit = temperature[0] >> 4;
-    digit |= (temperature[1] & 0x7) << 4;
-
-    // Store decimal digits
-    decimal = temperature[0] & 0xf;
-    decimal *= THERM_DECIMAL_STEPS_12BIT;
-
-    PORTB = ~digitPatterns[digit / 10];
-    HIGH(PORTB, PB0);
-    _delay_ms(500);
-    PORTB = ~digitPatterns[digit % 10];
-    LOW(PORTB, PB0);
-
-    if (digit > 25) {
-      HIGH(LED_PORT, LED_PIN);
-    } else {
-      LOW(LED_PORT, LED_PIN);
->>>>>>> a61472f91c68db2af953208e44d30691717ccb56
+        // Разрешение глобальных прерываний
+        sei();
     }
 
-    // _delay_ms(750);
-  }
+    OUTPUT_MODE(DDRD, PD0);
+    OUTPUT_MODE(DDRD, PD1);
 
-  return 0;
+    // Buffer length must be at least 12bytes long! ["+XXX.XXXX C"]
+    u8 temperature[2] = {};
+    int8_t digit = 0;
+    u16 decimal = 0;
+
+    // Set PORTC as output for segments
+    DDRB = 0xFF;
+
+    // HIGH(PORTD, PD0);
+    // PORTB = ~digitPatterns[0];
+
+    while (1) {
+      DS18B20_init();
+      DS18B20_write_byte(CMD_SKIP_ROM);
+      DS18B20_write_byte(CMD_CONVERT_TEMP);
+
+      // Wait until conversion is complete
+      while (!DS18B20_read_bit());
+
+      DS18B20_init();
+      DS18B20_write_byte(CMD_SKIP_ROM);
+      DS18B20_write_byte(CMD_READ_SCRATCHPAD);
+
+      temperature[0] = DS18B20_read_byte();
+      temperature[1] = DS18B20_read_byte();
+
+      // Store temperature integer digits and decimal digits
+      digit = temperature[0] >> 4;
+      digit |= (temperature[1] & 0x7) << 4;
+
+      // Store decimal digits
+      decimal = temperature[0] & 0xf;
+      decimal *= THERM_DECIMAL_STEPS_12BIT;
+
+      display1_data = digit % 10;
+      display2_data = digit / 10;
+    }
+}
+
+ISR (TIMER1_COMPA_vect)
+{
+    static u8 display_selector = 0;
+
+    // Выбор активного дисплея
+    if (display_selector == 0) {
+        LOW(PORTD, PD1);
+        HIGH(PORTD, PD0);
+        PORTB = ~digitPatterns[display1_data];
+    } else {
+        LOW(PORTD, PD0);
+        HIGH(PORTD, PD1);
+        PORTB = ~digitPatterns[display2_data];
+    }
+
+    // Переключение на следующий дисплей
+    display_selector ^= 1;
 }
