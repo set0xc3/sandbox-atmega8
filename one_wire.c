@@ -22,7 +22,7 @@ u8 ow_reset(void)
     ow_set_mode(OW_MODE_READ);
     _delay_us(60);
 
-    return (OW_PORT & (1 << OW_BIT)); // 0 - OK, 1 - not OK   
+    return (OW_PIN & (1 << OW_BIT)); // 0 - OK, 1 - not OK   
 }
 
 void ow_write_bit(u8 bit) 
@@ -55,7 +55,7 @@ u8 ow_read_bit(void)
     ow_set_mode(OW_MODE_READ);
     _delay_us(14);
 
-    if (OW_PORT & (1 << OW_BIT)) {
+    if (OW_PIN & (1 << OW_BIT)) {
         res = 1;
     }
 
