@@ -164,7 +164,7 @@ int main(void) {
     ow_write_byte(CMD_CONVERT_TEMP);
 
     // Wait until conversion is complete
-    // while (ow_read_bit());
+    while (ow_read_bit());
 
     ow_reset();
     ow_write_byte(CMD_SKIP_ROM);
