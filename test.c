@@ -30,13 +30,41 @@
 #define OW_PIN PINC
 #define OW_BIT PC0
 
+#define OW_A 5
+#define OW_B 64
+#define OW_C 60
+#define OW_D 10
+#define OW_E 9
+#define OW_F 55
+#define OW_G 0
+#define OW_H 480
+#define OW_I 70
+#define OW_J 410
+
 typedef enum {
   OW_DeviceNoFound,
   OW_ReadFailed,
 } OW_Error;
 
+u8 ow_reset(void);
+void ow_write(u8 byte);
+void ow_write_bit(u8 bit);
+void ow_write_bytes(u8 *buf, u8 byte);
+u8 ow_read(void);
+u8 ow_read_bit(void);
+void ow_read_bytes(u8 *buf);
+
 u8 ow_reset(void) {
   u8 res = 0;
+  u8 retries = 125;
+
+  INPUT_MODE(OW_DDR, OW_BIT);
+  do {
+    if (--retries == 0) {
+      return 0;
+    }
+    _delay_us(1);
+  } while (!READ(OW_PIN, OW_BIT));
 
   // Reset
   {
@@ -54,32 +82,55 @@ u8 ow_reset(void) {
   // Read
   {
     res = READ(OW_PIN, OW_BIT); // 0 - OK, 1 - not OK
-    _delay_us(420);
+    _delay_us(410);
   }
 
   return res;
+}
+
+void ow_write(u8 byte) {
+  for (u8 bit_mask = 0x01; bit_mask; bit_mask <<= 1) {
+    ow_write_bit(bit_mask & byte ? 1 : 0);
+  }
 }
 
 void ow_write_bit(u8 bit) {
   LOW(OW_PORT, OW_BIT);
   OUTPUT_MODE(OW_DDR, OW_BIT);
 
-  _delay_us(1);
+  _delay_us(10);
 
-  if (bit) {
-    INPUT_MODE(OW_DDR, OW_BIT);
+  if (bit & 1) {
+    LOW(OW_PORT, OW_BIT);
+    OUTPUT_MODE(OW_DDR, OW_BIT);
+    _delay_us(10);
+    HIGH(OW_PORT, OW_BIT);
+    _delay_us(60);
+  } else {
+    LOW(OW_PORT, OW_BIT);
+    OUTPUT_MODE(OW_DDR, OW_BIT);
+    _delay_us(65);
+    HIGH(OW_PORT, OW_BIT);
+    _delay_us(5);
   }
-
-  _delay_us(60);
-
-  INPUT_MODE(OW_DDR, OW_BIT);
 }
 
-void ow_write_byte(u8 byte) {
+void ow_write_bytes(u8 *buf, u8 byte) {
   for (u8 i = 0; i < 8; i += 1) {
-    ow_write_bit(byte & 1);
-    byte >>= 1;
+    ow_write(buf[i]);
   }
+}
+
+u8 ow_read(void) {
+  u8 res = 0;
+
+  for (u8 bit_mask = 0x01; bit_mask; bit_mask <<= 1) {
+    if (ow_read_bit()) {
+      res |= bit_mask;
+    }
+  }
+
+  return res;
 }
 
 u8 ow_read_bit(void) {
@@ -87,24 +138,21 @@ u8 ow_read_bit(void) {
 
   LOW(OW_PORT, OW_BIT);
   OUTPUT_MODE(OW_DDR, OW_BIT);
-  _delay_us(1);
+  _delay_us(2);
+
   INPUT_MODE(OW_DDR, OW_BIT);
-  _delay_us(14);
+  _delay_us(10);
+
   res = READ(OW_PIN, OW_BIT); // 0 - OK, 1 - not OK
-  _delay_us(45);
+  _delay_us(55);
 
   return res;
 }
 
-u8 ow_read_byte(void) {
-  u8 res = 0;
-
+void ow_read_bytes(u8 *buf) {
   for (u8 i = 0; i < 8; i += 1) {
-    res >>= 1;
-    res |= (ow_read_bit() << 7);
+    buf[i] = ow_read();
   }
-
-  return res;
 }
 
 // Define segment patterns for numbers 0 to 9
@@ -150,41 +198,47 @@ int main(void) {
   OUTPUT_MODE(DDRD, PD1);
 
   // Buffer length must be at least 12bytes long! ["+XXX.XXXX C"]
-  u8 temperature[2] = {};
-  int8_t digit = 0;
-  u16 decimal = 0;
+  u8 temp_data[9] = {0};
+  f32 celsius, fahrenheit = 0.0;
 
   // Set PORTC as output for segments
   DDRB = 0xFF;
 
   while (1) {
-    while (ow_reset());
+    ow_reset();
+    ow_write(CMD_SKIP_ROM);
+    ow_write(CMD_CONVERT_TEMP);
 
-    ow_write_byte(CMD_SKIP_ROM);
-    ow_write_byte(CMD_CONVERT_TEMP);
-
-    // Wait until conversion is complete
-    while (ow_read_bit());
+    _delay_ms(750);
 
     ow_reset();
-    ow_write_byte(CMD_SKIP_ROM);
-    ow_write_byte(CMD_READ_SCRATCHPAD);
+    ow_write(CMD_SKIP_ROM);
+    ow_write(CMD_READ_SCRATCHPAD);
 
-    temperature[0] = ow_read_byte();
-    temperature[1] = ow_read_byte();
+    for (u8 i = 0; i < 9; i += 1) {
+      temp_data[i] = ow_read();
+    }
 
-    // Store temperature integer digits and decimal digits
-    digit = temperature[0] >> 4;
-    digit |= (temperature[1] & 0x7) << 4;
+    i16 raw = (temp_data[1] << 8) | temp_data[0];
+    u8 cfg = (temp_data[4] & 0x60);
+    // at lower res, the low bits are undefined, so let's zero them
+    if (cfg == 0x00)
+      raw = raw & ~7; // 9 bit resolution, 93.75 ms
+    else if (cfg == 0x20)
+      raw = raw & ~3; // 10 bit res, 187.5 ms
+    else if (cfg == 0x40)
+      raw = raw & ~1; // 11 bit res, 375 ms
+    //// default is 12 bit resolution, 750 ms conversion time
 
-    // Store decimal digits
-    decimal = temperature[0] & 0xf;
-    decimal *= THERM_DECIMAL_STEPS_12BIT;
+    celsius = (f32)raw / 16.0;
+    fahrenheit = celsius * 1.8 + 32.0;
 
-    display1_data = digit % 10;
-    display2_data = digit / 10;
+    if (celsius >= 22) {
+      // display1_data = 1;
+    }
 
-    _delay_ms(720);
+    display1_data = (u8)celsius % 10;
+    display2_data = (u8)celsius / 10;
   }
 }
 
