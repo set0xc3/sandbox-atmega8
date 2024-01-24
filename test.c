@@ -2,7 +2,6 @@
 
 #include <avr/interrupt.h>
 #include <avr/io.h>
-
 #include <util/delay.h>
 
 #include "base.h"
@@ -233,12 +232,13 @@ int main(void) {
     celsius = (f32)raw / 16.0;
     fahrenheit = celsius * 1.8 + 32.0;
 
-    if (celsius >= 22) {
-      // display1_data = 1;
+    if (celsius >= 100) {
+      display1_data = 9;
+      display2_data = 9;
+    } else if (celsius != 0) {
+      display1_data = (u8)celsius % 10;
+      display2_data = (u8)celsius / 10;
     }
-
-    display1_data = (u8)celsius % 10;
-    display2_data = (u8)celsius / 10;
   }
 }
 
