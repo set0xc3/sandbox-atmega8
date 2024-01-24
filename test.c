@@ -236,8 +236,8 @@ int main(void) {
       display1_data = 9;
       display2_data = 9;
     } else if (celsius != 0) {
-      display1_data = (u8)celsius % 10;
-      display2_data = (u8)celsius / 10;
+      display1_data = (u8)celsius  % 100 / 10;
+      display2_data = (u8)celsius % 10;
     }
   }
 }
