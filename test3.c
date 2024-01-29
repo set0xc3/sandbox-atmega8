@@ -107,7 +107,7 @@ void write_18b20(u8 data) {
     if (data & 0x01) {
       DDRC &= ~(1 << PC0); // PC0 - вход
     } else {
-      DDRC |= (1 << PC0);  // PC0 - выход
+      DDRC |= (1 << PC0); // PC0 - выход
     }
 
     data = data >> 1; // Следующий бит
@@ -120,6 +120,8 @@ void write_18b20(u8 data) {
     _delay_us(2);
   }
 }
+
+static u8 retries = 255;
 
 // Главная функция
 int main(void) {
@@ -140,9 +142,18 @@ int main(void) {
 
   ENABLE_INTERRUPTS; // Глобально разрешаем прерывания
 
-  while (1) {
-    if (!DS18B20_init()) {
-      continue;
+  for (;;) {
+    for (; !DS18B20_init();) {
+      if (retries == 0) {
+        // Тревога!
+        OUTPUT_MODE(DDRD, PD2);
+        HIGH(PORTD, PD2);
+        continue;
+      }
+
+      retries -= 1;
+      _delay_us(10000);
+      _delay_us(10000);
     }
 
     write_18b20(0xCC); // Проверка кода датчика
@@ -150,8 +161,17 @@ int main(void) {
 
     _delay_ms(750); // Задержка на опрос датчика
 
-    if (!DS18B20_init()) {
-      continue;
+    for (; !DS18B20_init();) {
+      if (retries == 0) {
+        // Тревога!
+        OUTPUT_MODE(DDRD, PD2);
+        HIGH(PORTD, PD2);
+        continue;
+      }
+
+      retries -= 1;
+      _delay_us(10000);
+      _delay_us(10000);
     }
 
     write_18b20(0xCC); // Проверка кода датчика
@@ -166,10 +186,21 @@ int main(void) {
     temp_int_2 = buffer % 10;
 
     buffer = (Temp_LSB & 0x0F);
-    // temp_point = buffer * 625 / 1000; // Точность темпер.преобразования(0.0625)
+    // temp_point = buffer * 625 / 1000; // Точность
+    // темпер.преобразования(0.0625)
 
-    // Выводим значения на дисплей
-    display_1 = temp_int_1;
-    display_2 = temp_int_2;
+    if (temp_int_1 >= 9 && temp_int_2 >= 9) {
+      display_1 = 9;
+      display_2 = 9;
+    } else if (temp_int_1 == 0 && temp_int_2 == 0) {
+    } else {
+      // Выводим значения на дисплей
+      display_1 = temp_int_1;
+      display_2 = temp_int_2;
+    }
+
+    INPUT_MODE(DDRD, PD2);
+    LOW(PORTD, PD2);
+    retries = 255;
   }
 }

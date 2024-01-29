@@ -14,6 +14,11 @@ typedef signed long long i64;
 typedef float f32;
 typedef double f64;
 
+typedef i8 b8;
+
+#define false 0
+#define true 1
+
 #define INPUT_MODE(port, pin)   ((port) &= ~(1 << (pin)))   // Макрос для установки пина как вход
 #define OUTPUT_MODE(port, pin)  ((port) |= (1 << (pin)))    // Макрос для установки пина как выход
 #define LOW(port, pin)          ((port) &= ~(1 << (pin)))   // Макрос для установки пина в состояние "низкий уровень"
