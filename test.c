@@ -6,6 +6,9 @@
 
 #include "base.h"
 
+#define ENABLE_INTERRUPTS sei()
+#define DISABLE_INTERRUPTS cli()
+
 // 1-wire
 
 #define CMD_CONVERT_TEMP 0x44
@@ -57,30 +60,36 @@ u8 ow_reset(void) {
   u8 res = 0;
   u8 retries = 125;
 
+  DISABLE_INTERRUPTS;
   INPUT_MODE(OW_DDR, OW_BIT);
+  ENABLE_INTERRUPTS;
   do {
     if (--retries == 0) {
       return 0;
     }
-    _delay_us(1);
+    _delay_us(2);
   } while (!READ(OW_PIN, OW_BIT));
 
   // Reset
   {
+    DISABLE_INTERRUPTS;
     LOW(OW_PORT, OW_BIT);
     OUTPUT_MODE(OW_DDR, OW_BIT);
+    ENABLE_INTERRUPTS;
     _delay_us(480);
   }
 
   // Presence
   {
+    DISABLE_INTERRUPTS;
     INPUT_MODE(OW_DDR, OW_BIT);
-    _delay_us(60);
+    _delay_us(70);
   }
 
   // Read
   {
     res = READ(OW_PIN, OW_BIT); // 0 - OK, 1 - not OK
+    ENABLE_INTERRUPTS;
     _delay_us(410);
   }
 
@@ -91,6 +100,11 @@ void ow_write(u8 byte) {
   for (u8 bit_mask = 0x01; bit_mask; bit_mask <<= 1) {
     ow_write_bit(bit_mask & byte ? 1 : 0);
   }
+
+  DISABLE_INTERRUPTS;
+  LOW(OW_PORT, OW_BIT);
+  INPUT_MODE(OW_DDR, OW_BIT);
+  ENABLE_INTERRUPTS;
 }
 
 void ow_write_bit(u8 bit) {
@@ -100,16 +114,20 @@ void ow_write_bit(u8 bit) {
   _delay_us(10);
 
   if (bit & 1) {
+    DISABLE_INTERRUPTS;
     LOW(OW_PORT, OW_BIT);
     OUTPUT_MODE(OW_DDR, OW_BIT);
     _delay_us(10);
     HIGH(OW_PORT, OW_BIT);
-    _delay_us(60);
+    ENABLE_INTERRUPTS;
+    _delay_us(55);
   } else {
+    DISABLE_INTERRUPTS;
     LOW(OW_PORT, OW_BIT);
     OUTPUT_MODE(OW_DDR, OW_BIT);
     _delay_us(65);
     HIGH(OW_PORT, OW_BIT);
+    ENABLE_INTERRUPTS;
     _delay_us(5);
   }
 }
@@ -117,6 +135,11 @@ void ow_write_bit(u8 bit) {
 void ow_write_bytes(u8 *buf, u8 byte) {
   for (u8 i = 0; i < 8; i += 1) {
     ow_write(buf[i]);
+
+    DISABLE_INTERRUPTS;
+    LOW(OW_PORT, OW_BIT);
+    INPUT_MODE(OW_DDR, OW_BIT);
+    ENABLE_INTERRUPTS;
   }
 }
 
@@ -135,15 +158,17 @@ u8 ow_read(void) {
 u8 ow_read_bit(void) {
   u8 res = 0;
 
+  DISABLE_INTERRUPTS;
   LOW(OW_PORT, OW_BIT);
   OUTPUT_MODE(OW_DDR, OW_BIT);
-  _delay_us(2);
+  _delay_us(3);
 
   INPUT_MODE(OW_DDR, OW_BIT);
   _delay_us(10);
 
   res = READ(OW_PIN, OW_BIT); // 0 - OK, 1 - not OK
-  _delay_us(55);
+  ENABLE_INTERRUPTS;
+  _delay_us(53);
 
   return res;
 }

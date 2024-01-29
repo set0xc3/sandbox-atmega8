@@ -6,6 +6,9 @@
 
 #include "base.h"
 
+#define ENABLE_INTERRUPTS sei()
+#define DISABLE_INTERRUPTS cli()
+
 // Массив значениий для семисегментного индикатора
 char SEGMENTE[] = {
     0b11111100, // 0
@@ -45,14 +48,23 @@ u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag = 0;
 
 // Инициализация DS18B20
 u8 DS18B20_init(void) {
+  DISABLE_INTERRUPTS;
+
   PORTC &= ~(1 << PC0); // Устанавливаем низкий уровень
   DDRC |= (1 << PC0);   // PC0 - выход
+
+  ENABLE_INTERRUPTS;
+
   _delay_us(480);
+
+  DISABLE_INTERRUPTS;
 
   DDRC &= ~(1 << PC0); // PC0 - вход
   _delay_us(60);
 
   OK_Flag = !(PINC & (1 << PC0)); // Ловим импульс присутствия датчика
+
+  ENABLE_INTERRUPTS;
 
   // если OK_Flag = 0 датчик подключен, OK_Flag = 1 датчик не подключен
   _delay_us(410);
@@ -64,16 +76,19 @@ u8 DS18B20_init(void) {
 u8 read_18b20(void) {
   u8 res = 0;
   for (u8 i = 0; i < 8; i++) {
+
+    DISABLE_INTERRUPTS;
+
     DDRC |= (1 << PC0); // PC0 - выход
     _delay_us(2);
-
     DDRC &= ~(1 << PC0); // PC0 - вход
-    _delay_us(4);
-
+    _delay_us(8);
     res = res >> 1; // Следующий бит
     if (PINC & (1 << PC0)) {
       res |= 0x80;
     }
+
+    ENABLE_INTERRUPTS;
 
     _delay_us(60);
   }
@@ -83,6 +98,9 @@ u8 read_18b20(void) {
 // Функция записи байта в DS18B20
 void write_18b20(u8 data) {
   for (u8 i = 0; i < 8; i++) {
+
+    DISABLE_INTERRUPTS;
+
     DDRC |= (1 << PC0); // PC0 - выход
     _delay_us(2);
 
@@ -96,6 +114,9 @@ void write_18b20(u8 data) {
     _delay_us(60);
 
     DDRC &= ~(1 << PC0); // PC0 - вход
+
+    ENABLE_INTERRUPTS;
+
     _delay_us(2);
   }
 }
@@ -112,26 +133,24 @@ int main(void) {
   TIMSK |= (1 << TOIE2); // Разрешение прерывания по Т2
   TCCR2 |= (1 << CS21);  // Предделитель на 8
 
-  u32 buffer = 0;
-  u32 temp_int_1,
+  u16 buffer = 0;
+  u16 temp_int_1,
       temp_int_2 = 0; // Переменные для целого значения температуры
-  u32 temp_point = 0; // Переменная для дробного значения температуры
+  // u32 temp_point = 0; // Переменная для дробного значения температуры
 
-  sei(); // Глобально разрешаем прерывания
+  ENABLE_INTERRUPTS; // Глобально разрешаем прерывания
 
   while (1) {
     if (!DS18B20_init()) {
-      display_1 = display_2 = 0;
       continue;
     }
 
     write_18b20(0xCC); // Проверка кода датчика
     write_18b20(0x44); // Запуск температурного преобразования
 
-    _delay_ms(1000); // Задержка на опрос датчика
+    _delay_ms(750); // Задержка на опрос датчика
 
     if (!DS18B20_init()) {
-      display_1 = display_2 = 0;
       continue;
     }
 
@@ -147,7 +166,7 @@ int main(void) {
     temp_int_2 = buffer % 10;
 
     buffer = (Temp_LSB & 0x0F);
-    temp_point = buffer * 625 / 1000; // Точность темпер.преобразования(0.0625)
+    // temp_point = buffer * 625 / 1000; // Точность темпер.преобразования(0.0625)
 
     // Выводим значения на дисплей
     display_1 = temp_int_1;
