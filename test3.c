@@ -1,15 +1,4 @@
-// Режим работы:
-//  - Обычный
-//  - Контроль
-//  - Выключен
-//  - Тревога
-
-// Растопка/Контроль
-//
-//
-//
-//
-
+#include <stdio.h>
 #define F_CPU 1000000UL
 
 #include <avr/interrupt.h>
@@ -22,7 +11,7 @@
 #define DISABLE_INTERRUPTS cli()
 
 // Массив значениий для семисегментного индикатора
-char SEGMENTE[] = {
+char display_segment_numbers[11] = {
     0b11111100, // 0
     0b01100000, // 1
     0b11011010, // 2
@@ -33,22 +22,65 @@ char SEGMENTE[] = {
     0b11100000, // 7
     0b11111110, // 8
     0b11110110, // 9
-    0b00000000, // 10 пусто
+    0b00000010, // -
 };
 
-char menu_segmente[] = {
-    0b11111100, // CP
-    0b01100000, // pp
-    0b11011010, // OB
-    0b11110010, // OP
-    0b01100110, // TP
-    0b10110110, // HI
-    0b10111110, // TO
-    0b11100000, // TU
-    0b11111110, // BU
-    0b11110110, // UF
+enum Work_Mode {
+  WorkMode_Off = 0,
+  WorkMode_Control,
+  WorkMode_Alarm,
+  WorkMode_COUNT,
 };
 
+enum Menu_Kind {
+  MenuKind_CP = 0,
+  MenuKind_PP,
+  MenuKind_OB,
+  MenuKind_OP,
+  MenuKind_TP,
+  MenuKind_HI,
+  MenuKind_TO,
+  MenuKind_TU,
+  MenuKind_BU,
+  MenuKind_UF,
+  MenuKind_COUNT,
+};
+
+char display_segment_menu[10][2] = {
+    // CP
+    {0b10011101, 0b11001111},
+
+    // PP
+    {0b11001111, 0b11001111},
+
+    // Ob
+    {0b11111101, 0b00111111},
+
+    // OP
+    {0b11111101, 0b11001111},
+
+    // TP
+    {0b00011111, 0b11001111},
+
+    // HI
+    {0b01101111, 0b00001101},
+
+    // TO
+    {0b00011111, 0b11111101},
+
+    // TU
+    {0b00011111, 0b01111101},
+
+    // bU
+    {0b00111111, 0b01111101},
+
+    // UF
+    {0b01111101, 0b10001111},
+};
+
+u8 menu_data[10] = {
+    10, 3, 99, 90, 40, 3, 5, 30, 1, 0,
+};
 
 u8 segcounter = 0;
 volatile u8 display_1, display_2 = 0;
@@ -60,10 +92,10 @@ ISR(TIMER2_OVF_vect) {
 
   switch (segcounter) {
   case 0:
-    PORTB = ~(SEGMENTE[display_1]);
+    PORTB = ~(display_segment_numbers[display_1]);
     break;
   case 1:
-    PORTB = ~(SEGMENTE[display_2]);
+    PORTB = ~(display_segment_numbers[display_2]);
     break;
   }
   if ((segcounter++) > 2) {
@@ -74,7 +106,7 @@ ISR(TIMER2_OVF_vect) {
 u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag = 0;
 
 // Инициализация DS18B20
-u8 DS18B20_init(void) {
+u8 ds18b20_reset(void) {
   DISABLE_INTERRUPTS;
 
   PORTC &= ~(1 << PC0); // Устанавливаем низкий уровень
@@ -100,7 +132,7 @@ u8 DS18B20_init(void) {
 }
 
 // Функция чтения байта из DS18B20
-u8 read_18b20(void) {
+u8 ds18b20_read(void) {
   u8 res = 0;
   for (u8 i = 0; i < 8; i++) {
 
@@ -123,7 +155,7 @@ u8 read_18b20(void) {
 }
 
 // Функция записи байта в DS18B20
-void write_18b20(u8 data) {
+void ds18b20_write(u8 data) {
   for (u8 i = 0; i < 8; i++) {
 
     DISABLE_INTERRUPTS;
@@ -170,7 +202,7 @@ int main(void) {
   ENABLE_INTERRUPTS; // Глобально разрешаем прерывания
 
   for (;;) {
-    for (; !DS18B20_init();) {
+    for (; !ds18b20_reset();) {
       if (retries == 0) {
         // Тревога!
         OUTPUT_MODE(DDRD, PD2);
@@ -183,12 +215,12 @@ int main(void) {
       _delay_us(10000);
     }
 
-    write_18b20(0xCC); // Проверка кода датчика
-    write_18b20(0x44); // Запуск температурного преобразования
+    ds18b20_write(0xCC); // Проверка кода датчика
+    ds18b20_write(0x44); // Запуск температурного преобразования
 
     _delay_ms(750); // Задержка на опрос датчика
 
-    for (; !DS18B20_init();) {
+    for (; !ds18b20_reset();) {
       if (retries == 0) {
         // Тревога!
         OUTPUT_MODE(DDRD, PD2);
@@ -201,11 +233,11 @@ int main(void) {
       _delay_us(10000);
     }
 
-    write_18b20(0xCC); // Проверка кода датчика
-    write_18b20(0xBE); // Считываем содержимое ОЗУ
+    ds18b20_write(0xCC); // Проверка кода датчика
+    ds18b20_write(0xBE); // Считываем содержимое ОЗУ
 
-    Temp_LSB = read_18b20(); // Читаем первые 2 байта блокнота
-    Temp_MSB = read_18b20();
+    Temp_LSB = ds18b20_read(); // Читаем первые 2 байта блокнота
+    Temp_MSB = ds18b20_read();
 
     // Вычисляем целое значение температуры
     buffer = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
