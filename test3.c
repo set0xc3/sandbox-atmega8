@@ -1,4 +1,3 @@
-#include <stdio.h>
 #define F_CPU 1000000UL
 
 #include <avr/interrupt.h>
@@ -82,15 +81,15 @@ u8 menu_data[10] = {
     10, 3, 99, 90, 40, 3, 5, 30, 1, 0,
 };
 
-u8 segcounter = 0;
+volatile uint8_t display_state = 0;
 volatile u8 display_1, display_2 = 0;
 
 // Прерывание по переполнению T2, динамическая индикация
-ISR(TIMER2_OVF_vect) {
+ISR(TIMER2_COMP_vect) {
   PORTB = 0xFF;
-  PORTD = (1 << segcounter);
+  PORTD = (1 << display_state);
 
-  switch (segcounter) {
+  switch (display_state) {
   case 0:
     PORTB = ~(display_segment_numbers[display_1]);
     break;
@@ -98,9 +97,8 @@ ISR(TIMER2_OVF_vect) {
     PORTB = ~(display_segment_numbers[display_2]);
     break;
   }
-  if ((segcounter++) > 2) {
-    segcounter = 0;
-  }
+
+  display_state = (display_state + 1) % 4;
 }
 
 u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag = 0;
@@ -191,15 +189,16 @@ int main(void) {
   PORTB = 0x00;
 
   // Настройка Т2
-  TIMSK |= (1 << TOIE2); // Разрешение прерывания по Т2
-  TCCR2 |= (1 << CS21);  // Предделитель на 8
+  TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21) | (1 << CS20); // Prescaler 1024
+	TIMSK |= (1 << OCIE2);
+	OCR2 = 4;
+
+  ENABLE_INTERRUPTS; // Глобально разрешаем прерывания
 
   u16 buffer = 0;
   u16 temp_int_1,
       temp_int_2 = 0; // Переменные для целого значения температуры
   // u32 temp_point = 0; // Переменная для дробного значения температуры
-
-  ENABLE_INTERRUPTS; // Глобально разрешаем прерывания
 
   for (;;) {
     for (; !ds18b20_reset();) {
@@ -244,7 +243,7 @@ int main(void) {
     temp_int_1 = buffer % 100 / 10;
     temp_int_2 = buffer % 10;
 
-    buffer = (Temp_LSB & 0x0F);
+    // buffer = (Temp_LSB & 0x0F);
     // temp_point = buffer * 625 / 1000; // Точность
     // темпер.преобразования(0.0625)
 

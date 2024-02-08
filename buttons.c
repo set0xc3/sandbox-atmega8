@@ -1,9 +1,11 @@
+#define F_CPU 1000000UL
+
 #include <avr/io.h>
 
-#define BUTTON1_PIN PD1
-#define BUTTON2_PIN PD2
-#define BUTTON3_PIN PD3
-#define LED_PIN PD5
+#define BUTTON1_PIN PD5
+#define BUTTON2_PIN PD6
+#define BUTTON3_PIN PD7
+#define LED_PIN PD2
 
 void button1Task() {
     PORTD |= (1 << LED_PIN);  // Включение диода при нажатии кнопки 1
