@@ -74,7 +74,7 @@ typedef i8 b8;
 #define PIN_OW_PORT PORTD
 
 // Массив значениий для семисегментного индикатора
-char display_segment_numbers[11] = {
+char display_segment_numbers[12] = {
     0b11111100, // 0
     0b01100000, // 1
     0b11011010, // 2
@@ -86,6 +86,7 @@ char display_segment_numbers[11] = {
     0b11111110, // 8
     0b11110110, // 9
     0b00000010, // -
+    0b00000000, // пусто
 };
 
 char display_segment_menu[10][2] = {
@@ -103,8 +104,9 @@ char display_segment_menu[10][2] = {
 
 // Перечисление для определения состояний системы
 typedef enum State {
-  STATE_IDLE = 0,
+  STATE_MAIN = 0,
   STATE_MENU,
+  STATE_MENU_TEMP_CHANGE,
   STATE_MENU_PARAMETERS,
   STATE_HEATING,
   STATE_VENTILATION,
@@ -152,7 +154,7 @@ typedef union Settings {
   u8 temp;
 
   u8 e[10];
-} Settings; // 10-bytes
+} Settings; // 11-bytes
 
 typedef struct Time {
   u32 milliseconds;
@@ -163,6 +165,8 @@ typedef struct Time {
 
 // Глобальные переменные
 volatile u8 display_idx = 0;
+volatile u8 display_enable = 1;
+
 volatile Parameters menu_idx = CP;
 volatile u8 menu_seconds = 0; // 2s
 volatile u8 menu_timer_enable = 0;
@@ -176,8 +180,8 @@ volatile u8 button_down_seconds[BUTTON_COUNT] = {0};
 volatile u8 current_temp = 0;
 volatile u8 target_temp = 60;
 
-volatile enum State last_state = STATE_IDLE;
-volatile enum State state = STATE_IDLE;
+volatile enum State last_state = STATE_MAIN;
+volatile enum State state = STATE_MAIN;
 
 volatile Settings settings = {0};
 
@@ -215,6 +219,7 @@ int main(void) {
   settings.p.controller_shutdown_temperature = 30; // 25-50
   settings.p.sound_signal_enabled = 1;             // 0-1
   settings.p.factory_settings = 0;                 // 0-1
+  settings.temp = 59;
 
   init_IO();
   init_timer();
@@ -222,28 +227,6 @@ int main(void) {
   while (1) {
     read_temperature();
     handle_buttons();
-
-    switch (state) {
-    case STATE_IDLE:
-      break;
-    case STATE_MENU:
-    case STATE_MENU_PARAMETERS:
-      break;
-    case STATE_HEATING:
-      // Логика в режиме подогрева
-      // ...
-      break;
-    case STATE_VENTILATION:
-      // Логика в режиме вентиляции
-      // ...
-      break;
-    case STATE_ALARM:
-      // Логика в режиме аварии
-      // ...
-      break;
-    default:
-      break;
-    }
   }
 
   return 0;
@@ -273,7 +256,7 @@ void init_timer(void) {
   TCCR2 =
       (1 << WGM21) | (1 << CS22) | (1 << CS21) | (1 << CS20); // Prescaler 1024
   TIMSK |= (1 << OCIE2);
-  OCR2 = 4; // 1s for 1MHz clock
+  OCR2 = 4; // 5ms for 1MHz clock
 
   // Разрешение глобальных прерываний
   ENABLE_INTERRUPTS();
@@ -327,20 +310,74 @@ void handle_buttons(void) {
   static u32 start_time = 0;
   static u8 tmp_param = 0;
 
-  memcpy(&last_buttons, &buttons, sizeof(last_buttons));
+  memcpy(last_buttons, buttons, sizeof(last_buttons));
 
   buttons[BUTTON_UP] = PIN_BUTTON_READ & (1 << PIN_BUTTON_UP);
   buttons[BUTTON_MENU] = PIN_BUTTON_READ & (1 << PIN_BUTTON_MENU);
   buttons[BUTTON_DOWN] = PIN_BUTTON_READ & (1 << PIN_BUTTON_DOWN);
 
   switch (state) {
-  case STATE_IDLE:
+  case STATE_MAIN:
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
     } else if (button_released(BUTTON_MENU)) {
       if (state != STATE_MENU) {
         menu_timer_enable = 0;
         menu_seconds = 0;
+      }
+    }
+
+    if (button_pressed(BUTTON_UP)) {
+      menu_seconds = 0;
+      start_time = global_time;
+      tmp_param = settings.temp < 80 ? settings.temp + 1 : 80;
+      settings.temp = tmp_param;
+      state = STATE_MENU_TEMP_CHANGE;
+      menu_timer_enable = 1;
+    }
+    if (button_pressed(BUTTON_DOWN)) {
+      menu_seconds = 0;
+      start_time = global_time;
+      tmp_param = settings.temp > 35 ? settings.temp - 1 : 35;
+      settings.temp = tmp_param;
+      state = STATE_MENU_TEMP_CHANGE;
+      menu_timer_enable = 1;
+    }
+    break;
+  case STATE_MENU_TEMP_CHANGE:
+    if (button_pressed(BUTTON_UP)) {
+      menu_seconds = 0;
+      start_time = global_time;
+      tmp_param = settings.temp < 80 ? settings.temp + 1 : 80;
+      settings.temp = tmp_param;
+      state = STATE_MENU_TEMP_CHANGE;
+      menu_timer_enable = 1;
+    }
+    if (button_pressed(BUTTON_DOWN)) {
+      menu_seconds = 0;
+      start_time = global_time;
+      tmp_param = settings.temp > 35 ? settings.temp - 1 : 35;
+      settings.temp = tmp_param;
+      state = STATE_MENU_TEMP_CHANGE;
+      menu_timer_enable = 1;
+    }
+
+    if (button_down(BUTTON_UP)) {
+      menu_seconds = 0;
+      u32 press_duration = global_time - start_time;
+      if (press_duration >= 800) {
+        tmp_param = settings.temp < 80 ? settings.temp + 1 : 80;
+        settings.temp = tmp_param;
+        _delay_ms(100);
+      }
+    }
+    if (button_down(BUTTON_DOWN)) {
+      menu_seconds = 0;
+      u32 press_duration = global_time - start_time;
+      if (press_duration >= 800) {
+        tmp_param = settings.temp > 35 ? settings.temp - 1 : 35;
+        settings.temp = tmp_param;
+        _delay_ms(100);
       }
     }
     break;
@@ -365,7 +402,7 @@ void handle_buttons(void) {
         u32 press_duration = global_time - start_time;
         if (press_duration >= 800) {
           menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
-          _delay_ms(50);
+          _delay_ms(100);
         }
       }
     }
@@ -375,9 +412,7 @@ void handle_buttons(void) {
       if (button_pressed(BUTTON_DOWN)) {
         menu_seconds = 0;
         start_time = global_time;
-        if (menu_idx > 0) {
-          menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
-        }
+        menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
       }
 
       if (button_down(BUTTON_DOWN)) {
@@ -385,7 +420,7 @@ void handle_buttons(void) {
         u32 press_duration = global_time - start_time;
         if (press_duration >= 800) {
           menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
-          _delay_ms(50);
+          _delay_ms(100);
         }
       }
     }
@@ -403,26 +438,32 @@ void handle_buttons(void) {
       if (button_pressed(BUTTON_UP)) {
         menu_seconds = 0;
         start_time = global_time;
-        if (settings.e[menu_idx] < 99) {
-          tmp_param = settings.e[menu_idx] + 1;
-        }
+        tmp_param = settings.e[menu_idx] < 99 ? settings.e[menu_idx] + 1 : 99;
       }
       if (button_down(BUTTON_UP)) {
         menu_seconds = 0;
         u32 press_duration = global_time - start_time;
         if (press_duration >= 800) {
-          if (settings.e[menu_idx] < 99) {
-            tmp_param = settings.e[menu_idx] + 1;
-          }
+          tmp_param = settings.e[menu_idx] < 99 ? settings.e[menu_idx] + 1 : 99;
           _delay_ms(50);
         }
       }
     }
 
-    if (button_pressed(BUTTON_DOWN)) {
-      menu_seconds = 0;
-      if (settings.e[menu_idx] > 0) {
-        tmp_param = settings.e[menu_idx] - 1;
+    // BUTTON_DOWN
+    {
+      if (button_pressed(BUTTON_DOWN)) {
+        menu_seconds = 0;
+        start_time = global_time;
+        tmp_param = settings.e[menu_idx] > 0 ? settings.e[menu_idx] - 1 : 0;
+      }
+      if (button_down(BUTTON_DOWN)) {
+        menu_seconds = 0;
+        u32 press_duration = global_time - start_time;
+        if (press_duration >= 800) {
+          tmp_param = settings.e[menu_idx] > 0 ? settings.e[menu_idx] - 1 : 0;
+          _delay_ms(50);
+        }
       }
     }
 
@@ -457,6 +498,8 @@ u8 button_released(u8 code) { return last_buttons[code] && !buttons[code]; }
 u8 button_down(u8 code) { return last_buttons[code] && buttons[code]; }
 
 ISR(TIMER1_COMPA_vect) {
+  static u32 start_time = 0;
+
   global_time += 1;
 
   memcpy(&prev_time, &time, sizeof(prev_time));
@@ -478,12 +521,12 @@ ISR(TIMER1_COMPA_vect) {
       menu_seconds += 1;
     }
 
-    if (menu_seconds >= 2 && state == STATE_IDLE) {
+    if (menu_seconds >= 2 && state == STATE_MAIN) {
       state = STATE_MENU;
     }
 
-    if (menu_seconds >= 5 && state != STATE_IDLE) {
-      state = STATE_IDLE;
+    if (menu_seconds >= 5 && state != STATE_MAIN) {
+      state = STATE_MAIN;
       menu_timer_enable = 0;
       menu_seconds = 0;
     }
@@ -491,26 +534,14 @@ ISR(TIMER1_COMPA_vect) {
     menu_seconds = 0;
   }
 
-  if (button_down_timer[BUTTON_DOWN]) {
-    button_down_seconds[BUTTON_DOWN] += 1;
-  } else {
-    button_down_seconds[BUTTON_DOWN] = 0;
-  }
-  if (button_down_timer[BUTTON_MENU]) {
-    button_down_seconds[BUTTON_MENU] += 1;
-  } else {
-    button_down_seconds[BUTTON_MENU] = 0;
-  }
-  if (button_down_timer[BUTTON_UP]) {
-    button_down_seconds[BUTTON_UP] += 1;
-  } else {
-    button_down_seconds[BUTTON_UP] = 0;
+  if (state == STATE_MENU_TEMP_CHANGE && time.milliseconds >= 1000) {
+    display_enable ^= 1;
   }
 }
 
 ISR(TIMER2_COMP_vect) {
   switch (state) {
-  case STATE_IDLE:
+  case STATE_MAIN:
     display_menu(display_segment_numbers[temp % 100 / 10],
                  display_segment_numbers[temp % 10]);
     break;
@@ -521,6 +552,15 @@ ISR(TIMER2_COMP_vect) {
   case STATE_MENU_PARAMETERS:
     display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
                  display_segment_numbers[settings.e[menu_idx] % 10]);
+    break;
+  case STATE_MENU_TEMP_CHANGE:
+    if (display_enable) {
+      display_menu(display_segment_numbers[settings.temp % 100 / 10],
+                   display_segment_numbers[settings.temp % 10]);
+    } else {
+      display_menu(display_segment_numbers[11],
+                   display_segment_numbers[11]);
+    }
     break;
   }
 }
