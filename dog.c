@@ -184,7 +184,8 @@ void read_temperature(void);
 void display_menu(u8 display1, u8 display2);
 void handle_buttons(void);
 
-void menu_change_params(i8 value);
+void settings_reset(void);
+void settings_change_params(i8 value);
 
 u8 button_pressed(u8 code);
 u8 button_released(u8 code);
@@ -195,18 +196,7 @@ u8 ds18b20_read(void);
 void ds18b20_write(u8 data);
 
 int main(void) {
-  settings.p.ventilation_work_duration = 10;       // 5-95
-  settings.p.ventilation_pause_duration = 3;       // 1-99
-  settings.p.fan_speed = 99;                       // 30-99
-  settings.p.fan_power_during_ventilation = 90;    // 30-99
-  settings.p.pump_connection_temperature = 40;     // 25-70
-  settings.p.hysteresis = 3;                       // 0-5
-  settings.p.fan_power_reduction = 5;              // 0-10
-  settings.p.controller_shutdown_temperature = 30; // 25-50
-  settings.p.sound_signal_enabled = 1;             // 0-1
-  settings.p.factory_settings = 0;                 // 0-1
-
-  target_temp = 59;
+  settings_reset();
 
   init_IO();
   init_timer();
@@ -376,6 +366,10 @@ void handle_buttons(void) {
   } break;
 
   case STATE_MENU: {
+    if (settings.p.factory_settings) {
+      settings_reset();
+    }
+
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
       state = STATE_MENU_PARAMETERS;
@@ -431,13 +425,13 @@ void handle_buttons(void) {
       if (button_pressed(BUTTON_UP)) {
         menu_seconds = 0;
         start_time = time;
-        menu_change_params(1);
+        settings_change_params(1);
       }
       if (button_down(BUTTON_UP)) {
         menu_seconds = 0;
         u32 press_duration = time - start_time;
         if (press_duration >= 800) {
-          menu_change_params(1);
+          settings_change_params(1);
           _delay_ms(10);
         }
       }
@@ -448,13 +442,13 @@ void handle_buttons(void) {
       if (button_pressed(BUTTON_DOWN)) {
         menu_seconds = 0;
         start_time = time;
-        menu_change_params(-1);
+        settings_change_params(-1);
       }
       if (button_down(BUTTON_DOWN)) {
         menu_seconds = 0;
         u32 press_duration = time - start_time;
         if (press_duration >= 800) {
-          menu_change_params(-1);
+          settings_change_params(-1);
           _delay_ms(10);
         }
       }
@@ -463,7 +457,21 @@ void handle_buttons(void) {
   }
 }
 
-void menu_change_params(i8 value) {
+void settings_reset(void) {
+  settings.p.ventilation_work_duration = 10;       // 5-95
+  settings.p.ventilation_pause_duration = 3;       // 1-99
+  settings.p.fan_speed = 99;                       // 30-99
+  settings.p.fan_power_during_ventilation = 90;    // 30-99
+  settings.p.pump_connection_temperature = 40;     // 25-70
+  settings.p.hysteresis = 3;                       // 0-5
+  settings.p.fan_power_reduction = 5;              // 0-10
+  settings.p.controller_shutdown_temperature = 30; // 25-50
+  settings.p.sound_signal_enabled = 1;             // 0-1
+  settings.p.factory_settings = 0;                 // 0-1
+  target_temp = 59;
+}
+
+void settings_change_params(i8 value) {
   switch (menu_idx) {
   case CP:
     settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 5, 95);
