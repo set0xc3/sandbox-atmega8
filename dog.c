@@ -102,7 +102,12 @@ char display_segment_menu[10][2] = {
     {0b01111100, 0b10001111}, // UF
 };
 
-// Перечисление для определения состояний системы
+typedef enum Mode {
+  MODE_NONE,
+  MODE_RASTOPKA,
+  MODE_CONTROL,
+} Mode;
+
 typedef enum State {
   STATE_MAIN = 0,
   STATE_MENU,
@@ -165,7 +170,7 @@ volatile u8 menu_timer_enable = 0;
 volatile u8 buttons[BUTTON_COUNT] = {0};
 volatile u8 last_buttons[BUTTON_COUNT] = {0};
 
-volatile enum State state = STATE_MAIN;
+volatile State state = STATE_MAIN;
 
 volatile Settings settings = {0};
 
@@ -174,7 +179,6 @@ volatile u32 prev_time, time = 0;
 volatile u8 temp = 0;
 volatile u8 target_temp = 0;
 volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag = 0;
-volatile u8 temp1, temp2 = 0;
 // volatile u32 temp_point = 0; // Переменная для дробного значения температуры
 
 // Прототипы функций
@@ -204,6 +208,40 @@ int main(void) {
   while (1) {
     read_temperature();
     handle_buttons();
+
+    // РАСТОПКА
+    if (temp < 35) {
+      // Включить вентилятор
+    } else if (temp >= 35) {
+      // КОНТРОЛЬ
+      if (temp >= target_temp) {
+        // Выключаем вентилятор
+      }
+    }
+
+    // Срабатывание защиты!
+    if (temp < settings.p.controller_shutdown_temperature) {
+    }
+
+    // Срабатывание защиты!
+    if (temp > 90) {
+    }
+
+    // if (temp > (20 + settings.p.hysteresis)) {
+    //   DDRD = 0;
+    //   PORTD = 0;
+    //   DDRB = 0;
+    // } else if (temp < (20 - settings.p.hysteresis)) {
+    //   DDRD |= (1 << PD0) | (1 << PD1);
+    //   PORTD = (1 << display_idx);
+    //   DDRB = 0xFF;
+    // }
+
+    if (state == STATE_MENU) {
+      if (settings.p.factory_settings) {
+        settings_reset();
+      }
+    }
   }
 
   return 0;
@@ -244,7 +282,7 @@ void read_temperature(void) {
   ds18b20_write(0xCC); // Проверка кода датчика
   ds18b20_write(0x44); // Запуск температурного преобразования
 
-  _delay_us(750); // Задержка на опрос датчика
+  _delay_ms(750); // Задержка на опрос датчика
 
   ds18b20_reset();
   ds18b20_write(0xCC); // Проверка кода датчика
@@ -255,8 +293,6 @@ void read_temperature(void) {
 
   // Вычисляем целое значение температуры
   temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
-  temp1 = temp % 100 / 10;
-  temp2 = temp % 10;
 
   // temp = (Temp_LSB & 0x0F);
   // temp_point = temp * 625 / 1000; // Точность
@@ -292,7 +328,7 @@ void display_menu(u8 display1, u8 display2) {
 void handle_buttons(void) {
   static u32 start_time = 0;
 
-  memcpy(last_buttons, buttons, sizeof(last_buttons));
+  memcpy(&last_buttons, &buttons, sizeof(last_buttons));
 
   buttons[BUTTON_UP] = PIN_BUTTON_READ & (1 << PIN_BUTTON_UP);
   buttons[BUTTON_MENU] = PIN_BUTTON_READ & (1 << PIN_BUTTON_MENU);
@@ -366,10 +402,6 @@ void handle_buttons(void) {
   } break;
 
   case STATE_MENU: {
-    if (settings.p.factory_settings) {
-      settings_reset();
-    }
-
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
       state = STATE_MENU_PARAMETERS;
@@ -463,7 +495,7 @@ void settings_reset(void) {
   settings.p.fan_speed = 99;                       // 30-99
   settings.p.fan_power_during_ventilation = 90;    // 30-99
   settings.p.pump_connection_temperature = 40;     // 25-70
-  settings.p.hysteresis = 3;                       // 0-5
+  settings.p.hysteresis = 3;                       // 1-9
   settings.p.fan_power_reduction = 5;              // 0-10
   settings.p.controller_shutdown_temperature = 30; // 25-50
   settings.p.sound_signal_enabled = 1;             // 0-1
@@ -489,7 +521,7 @@ void settings_change_params(i8 value) {
     settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 25, 70);
     break;
   case HI:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 5);
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 1, 9);
     break;
   case TO:
     settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 10);
@@ -514,6 +546,96 @@ u8 button_pressed(u8 code) { return !last_buttons[code] && buttons[code]; }
 u8 button_released(u8 code) { return last_buttons[code] && !buttons[code]; }
 
 u8 button_down(u8 code) { return last_buttons[code] && buttons[code]; }
+
+// Инициализация DS18B20
+u8 ds18b20_reset(void) {
+  static u8 retries = 125;
+
+  DISABLE_INTERRUPTS();
+
+  PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+
+  ENABLE_INTERRUPTS();
+
+  // wait until the wire is high... just in case
+  do {
+    if (--retries == 0)
+      return 0;
+    _delay_us(2);
+  } while (!(PIN_OW_READ & (1 << PIN_OW)));
+
+  DISABLE_INTERRUPTS();
+
+  PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
+  PIN_OW_DDR |= (1 << PIN_OW); // выход
+
+  ENABLE_INTERRUPTS();
+
+  _delay_us(480);
+
+  DISABLE_INTERRUPTS();
+
+  PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+
+  _delay_us(60);
+
+  OK_Flag = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
+  // если OK_Flag = 0 датчик подключен, OK_Flag = 1 датчик не подключен
+
+  ENABLE_INTERRUPTS();
+
+  _delay_us(410);
+
+  return OK_Flag;
+}
+
+// Функция чтения байта из DS18B20
+u8 ds18b20_read(void) {
+  u8 res = 0;
+  for (u8 i = 0; i < 8; i++) {
+    DISABLE_INTERRUPTS();
+
+    PIN_OW_DDR |= (1 << PIN_OW); // выход
+    _delay_us(2);
+    PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+    _delay_us(8);
+    res = res >> 1; // Следующий бит
+    if (PIN_OW_READ & (1 << PIN_OW)) {
+      res |= 0x80;
+    }
+
+    ENABLE_INTERRUPTS();
+
+    _delay_us(60);
+  }
+  return res;
+}
+
+// Функция записи байта в DS18B20
+void ds18b20_write(u8 data) {
+  for (u8 i = 0; i < 8; i++) {
+
+    DISABLE_INTERRUPTS();
+
+    PIN_OW_DDR |= (1 << PIN_OW); // выход
+    _delay_us(2);
+
+    if (data & 0x01) {
+      PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+    } else {
+      PIN_OW_DDR |= (1 << PIN_OW); // выход
+    }
+
+    data = data >> 1; // Следующий бит
+    _delay_us(60);
+
+    PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+
+    ENABLE_INTERRUPTS();
+
+    _delay_us(2);
+  }
+}
 
 ISR(TIMER1_COMPA_vect) {
   static u32 start_time = 0;
@@ -569,80 +691,5 @@ ISR(TIMER2_COMP_vect) {
     display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
                  display_segment_numbers[settings.e[menu_idx] % 10]);
     break;
-  }
-}
-
-// Инициализация DS18B20
-u8 ds18b20_reset(void) {
-  DISABLE_INTERRUPTS();
-
-  PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
-  PIN_OW_DDR |= (1 << PIN_OW); // выход
-
-  ENABLE_INTERRUPTS();
-
-  _delay_us(480);
-
-  DISABLE_INTERRUPTS();
-
-  PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-  _delay_us(60);
-
-  OK_Flag = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
-
-  ENABLE_INTERRUPTS();
-
-  // если OK_Flag = 0 датчик подключен, OK_Flag = 1 датчик не подключен
-  _delay_us(410);
-
-  return OK_Flag;
-}
-
-// Функция чтения байта из DS18B20
-u8 ds18b20_read(void) {
-  u8 res = 0;
-  for (u8 i = 0; i < 8; i++) {
-
-    DISABLE_INTERRUPTS();
-
-    PIN_OW_DDR |= (1 << PIN_OW); // выход
-    _delay_us(2);
-    PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-    _delay_us(8);
-    res = res >> 1; // Следующий бит
-    if (PIN_OW_READ & (1 << PIN_OW)) {
-      res |= 0x80;
-    }
-
-    ENABLE_INTERRUPTS();
-
-    _delay_us(60);
-  }
-  return res;
-}
-
-// Функция записи байта в DS18B20
-void ds18b20_write(u8 data) {
-  for (u8 i = 0; i < 8; i++) {
-
-    DISABLE_INTERRUPTS();
-
-    PIN_OW_DDR |= (1 << PIN_OW); // выход
-    _delay_us(2);
-
-    if (data & 0x01) {
-      PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-    } else {
-      PIN_OW_DDR |= (1 << PIN_OW); // выход
-    }
-
-    data = data >> 1; // Следующий бит
-    _delay_us(60);
-
-    PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-
-    ENABLE_INTERRUPTS();
-
-    _delay_us(2);
   }
 }
