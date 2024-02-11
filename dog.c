@@ -151,17 +151,8 @@ typedef union Settings {
     u8 factory_settings;     // Uf – ЗАВОДСКИЕ НАСТРОЙКИ
   } p;
 
-  u8 temp;
-
   u8 e[10];
-} Settings; // 11-bytes
-
-typedef struct Time {
-  u32 milliseconds;
-  u32 seconds;
-  u32 minutes;
-  u32 hour;
-} Time;
+} Settings; // 10-bytes
 
 // Глобальные переменные
 volatile u8 display_idx = 0;
@@ -174,23 +165,16 @@ volatile u8 menu_timer_enable = 0;
 volatile u8 buttons[BUTTON_COUNT] = {0};
 volatile u8 last_buttons[BUTTON_COUNT] = {0};
 
-volatile u8 button_down_timer[BUTTON_COUNT] = {0};
-volatile u8 button_down_seconds[BUTTON_COUNT] = {0};
-
-volatile u8 current_temp = 0;
-volatile u8 target_temp = 60;
-
-volatile enum State last_state = STATE_MAIN;
 volatile enum State state = STATE_MAIN;
 
 volatile Settings settings = {0};
 
-volatile u32 global_time = 0;
-volatile Time prev_time, time = {0};
+volatile u32 prev_time, time = 0;
 
 volatile u8 temp = 0;
+volatile u8 target_temp = 0;
 volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag = 0;
-volatile u8 temp_1, temp_2 = 0;
+volatile u8 temp1, temp2 = 0;
 // volatile u32 temp_point = 0; // Переменная для дробного значения температуры
 
 // Прототипы функций
@@ -199,6 +183,8 @@ void init_timer(void);
 void read_temperature(void);
 void display_menu(u8 display1, u8 display2);
 void handle_buttons(void);
+
+void menu_change_params(i8 value);
 
 u8 button_pressed(u8 code);
 u8 button_released(u8 code);
@@ -219,7 +205,8 @@ int main(void) {
   settings.p.controller_shutdown_temperature = 30; // 25-50
   settings.p.sound_signal_enabled = 1;             // 0-1
   settings.p.factory_settings = 0;                 // 0-1
-  settings.temp = 59;
+
+  target_temp = 59;
 
   init_IO();
   init_timer();
@@ -278,8 +265,8 @@ void read_temperature(void) {
 
   // Вычисляем целое значение температуры
   temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
-  temp_1 = temp % 100 / 10;
-  temp_2 = temp % 10;
+  temp1 = temp % 100 / 10;
+  temp2 = temp % 10;
 
   // temp = (Temp_LSB & 0x0F);
   // temp_point = temp * 625 / 1000; // Точность
@@ -287,9 +274,15 @@ void read_temperature(void) {
 }
 
 void display_menu(u8 display1, u8 display2) {
+  if (!display_enable) {
+    DDRD = 0;
+    PORTD = 0;
+    DDRB = 0;
+    return;
+  }
+
   DDRD |= (1 << PD0) | (1 << PD1);
   PORTD = (1 << display_idx);
-
   DDRB = 0xFF;
 
   switch (display_idx) {
@@ -308,7 +301,6 @@ void display_menu(u8 display1, u8 display2) {
 
 void handle_buttons(void) {
   static u32 start_time = 0;
-  static u8 tmp_param = 0;
 
   memcpy(last_buttons, buttons, sizeof(last_buttons));
 
@@ -317,7 +309,7 @@ void handle_buttons(void) {
   buttons[BUTTON_DOWN] = PIN_BUTTON_READ & (1 << PIN_BUTTON_DOWN);
 
   switch (state) {
-  case STATE_MAIN:
+  case STATE_MAIN: {
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
     } else if (button_released(BUTTON_MENU)) {
@@ -329,60 +321,61 @@ void handle_buttons(void) {
 
     if (button_pressed(BUTTON_UP)) {
       menu_seconds = 0;
-      start_time = global_time;
-      tmp_param = settings.temp < 80 ? settings.temp + 1 : 80;
-      settings.temp = tmp_param;
+      start_time = time;
+      target_temp = target_temp < 80 ? target_temp + 1 : 80;
       state = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
     if (button_pressed(BUTTON_DOWN)) {
       menu_seconds = 0;
-      start_time = global_time;
-      tmp_param = settings.temp > 35 ? settings.temp - 1 : 35;
-      settings.temp = tmp_param;
+      start_time = time;
+      target_temp = target_temp > 35 ? target_temp - 1 : 35;
       state = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
-    break;
-  case STATE_MENU_TEMP_CHANGE:
+  } break;
+
+  case STATE_MENU_TEMP_CHANGE: {
+    if (button_pressed(BUTTON_MENU)) {
+      menu_timer_enable = 0;
+      menu_seconds = 0;
+      state = STATE_MAIN;
+    }
+
     if (button_pressed(BUTTON_UP)) {
       menu_seconds = 0;
-      start_time = global_time;
-      tmp_param = settings.temp < 80 ? settings.temp + 1 : 80;
-      settings.temp = tmp_param;
+      start_time = time;
+      target_temp = target_temp < 80 ? target_temp + 1 : 80;
       state = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
     if (button_pressed(BUTTON_DOWN)) {
       menu_seconds = 0;
-      start_time = global_time;
-      tmp_param = settings.temp > 35 ? settings.temp - 1 : 35;
-      settings.temp = tmp_param;
+      start_time = time;
+      target_temp = target_temp > 35 ? target_temp - 1 : 35;
       state = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
 
     if (button_down(BUTTON_UP)) {
       menu_seconds = 0;
-      u32 press_duration = global_time - start_time;
+      u32 press_duration = time - start_time;
       if (press_duration >= 800) {
-        tmp_param = settings.temp < 80 ? settings.temp + 1 : 80;
-        settings.temp = tmp_param;
-        _delay_ms(100);
+        target_temp = target_temp < 80 ? target_temp + 1 : 80;
+        _delay_ms(10);
       }
     }
     if (button_down(BUTTON_DOWN)) {
       menu_seconds = 0;
-      u32 press_duration = global_time - start_time;
+      u32 press_duration = time - start_time;
       if (press_duration >= 800) {
-        tmp_param = settings.temp > 35 ? settings.temp - 1 : 35;
-        settings.temp = tmp_param;
-        _delay_ms(100);
+        target_temp = target_temp > 35 ? target_temp - 1 : 35;
+        _delay_ms(10);
       }
     }
-    break;
+  } break;
 
-  case STATE_MENU:
+  case STATE_MENU: {
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
       state = STATE_MENU_PARAMETERS;
@@ -393,16 +386,16 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_UP)) {
         menu_seconds = 0;
-        start_time = global_time;
+        start_time = time;
         menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
       }
 
       if (button_down(BUTTON_UP)) {
         menu_seconds = 0;
-        u32 press_duration = global_time - start_time;
+        u32 press_duration = time - start_time;
         if (press_duration >= 800) {
           menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
-          _delay_ms(100);
+          _delay_ms(50);
         }
       }
     }
@@ -411,22 +404,22 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_DOWN)) {
         menu_seconds = 0;
-        start_time = global_time;
+        start_time = time;
         menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
       }
 
       if (button_down(BUTTON_DOWN)) {
         menu_seconds = 0;
-        u32 press_duration = global_time - start_time;
+        u32 press_duration = time - start_time;
         if (press_duration >= 800) {
           menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
-          _delay_ms(100);
+          _delay_ms(50);
         }
       }
     }
-    break;
+  } break;
 
-  case STATE_MENU_PARAMETERS:
+  case STATE_MENU_PARAMETERS: {
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
       state = STATE_MENU;
@@ -437,15 +430,15 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_UP)) {
         menu_seconds = 0;
-        start_time = global_time;
-        tmp_param = settings.e[menu_idx] < 99 ? settings.e[menu_idx] + 1 : 99;
+        start_time = time;
+        menu_change_params(1);
       }
       if (button_down(BUTTON_UP)) {
         menu_seconds = 0;
-        u32 press_duration = global_time - start_time;
+        u32 press_duration = time - start_time;
         if (press_duration >= 800) {
-          tmp_param = settings.e[menu_idx] < 99 ? settings.e[menu_idx] + 1 : 99;
-          _delay_ms(50);
+          menu_change_params(1);
+          _delay_ms(10);
         }
       }
     }
@@ -454,39 +447,56 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_DOWN)) {
         menu_seconds = 0;
-        start_time = global_time;
-        tmp_param = settings.e[menu_idx] > 0 ? settings.e[menu_idx] - 1 : 0;
+        start_time = time;
+        menu_change_params(-1);
       }
       if (button_down(BUTTON_DOWN)) {
         menu_seconds = 0;
-        u32 press_duration = global_time - start_time;
+        u32 press_duration = time - start_time;
         if (press_duration >= 800) {
-          tmp_param = settings.e[menu_idx] > 0 ? settings.e[menu_idx] - 1 : 0;
-          _delay_ms(50);
+          menu_change_params(-1);
+          _delay_ms(10);
         }
       }
     }
+  } break;
+  }
+}
 
-    if (menu_idx == CP)
-      settings.e[menu_idx] = CLAMP(tmp_param, 5, 95);
-    if (menu_idx == PP)
-      settings.e[menu_idx] = CLAMP(tmp_param, 1, 99);
-    if (menu_idx == OB)
-      settings.e[menu_idx] = CLAMP(tmp_param, 30, 99);
-    if (menu_idx == OP)
-      settings.e[menu_idx] = CLAMP(tmp_param, 30, 99);
-    if (menu_idx == TP)
-      settings.e[menu_idx] = CLAMP(tmp_param, 25, 70);
-    if (menu_idx == HI)
-      settings.e[menu_idx] = CLAMP(tmp_param, 0, 5);
-    if (menu_idx == TO)
-      settings.e[menu_idx] = CLAMP(tmp_param, 0, 10);
-    if (menu_idx == TU)
-      settings.e[menu_idx] = CLAMP(tmp_param, 25, 50);
-    if (menu_idx == BU)
-      settings.e[menu_idx] = CLAMP(tmp_param, 0, 1);
-    if (menu_idx == UF)
-      settings.e[menu_idx] = CLAMP(tmp_param, 0, 1);
+void menu_change_params(i8 value) {
+  switch (menu_idx) {
+  case CP:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 5, 95);
+    break;
+  case PP:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 1, 99);
+    break;
+  case OB:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 30, 99);
+    break;
+  case OP:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 30, 99);
+    break;
+  case TP:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 25, 70);
+    break;
+  case HI:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 5);
+    break;
+  case TO:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 10);
+    break;
+  case TU:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 25, 50);
+    break;
+  case BU:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 1);
+    break;
+  case UF:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 1);
+    break;
+  default:
+    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 99);
     break;
   }
 }
@@ -500,24 +510,22 @@ u8 button_down(u8 code) { return last_buttons[code] && buttons[code]; }
 ISR(TIMER1_COMPA_vect) {
   static u32 start_time = 0;
 
-  global_time += 1;
+  prev_time = time;
 
-  memcpy(&prev_time, &time, sizeof(prev_time));
+  time += 1;
+  start_time += 1;
 
-  time.milliseconds += 1;
-  if (time.milliseconds == 1000) {
-    time.milliseconds = 0;
-    time.seconds += 1;
-  } else if (time.seconds == 60) {
-    time.seconds = 0;
-    time.minutes += 1;
-  } else if (time.minutes == 60) {
-    time.minutes = 0;
-    time.hour += 1;
+  if (state == STATE_MENU_TEMP_CHANGE) {
+    if (start_time >= 250) {
+      display_enable ^= 1;
+      start_time = 0;
+    }
+  } else {
+    display_enable = 1;
   }
 
   if (menu_timer_enable) {
-    if (time.seconds > prev_time.seconds) {
+    if (time / 1000 > prev_time / 1000) {
       menu_seconds += 1;
     }
 
@@ -533,10 +541,6 @@ ISR(TIMER1_COMPA_vect) {
   } else {
     menu_seconds = 0;
   }
-
-  if (state == STATE_MENU_TEMP_CHANGE && time.milliseconds >= 1000) {
-    display_enable ^= 1;
-  }
 }
 
 ISR(TIMER2_COMP_vect) {
@@ -545,6 +549,10 @@ ISR(TIMER2_COMP_vect) {
     display_menu(display_segment_numbers[temp % 100 / 10],
                  display_segment_numbers[temp % 10]);
     break;
+  case STATE_MENU_TEMP_CHANGE:
+    display_menu(display_segment_numbers[target_temp % 100 / 10],
+                 display_segment_numbers[target_temp % 10]);
+    break;
   case STATE_MENU:
     display_menu(display_segment_menu[menu_idx][0],
                  display_segment_menu[menu_idx][1]);
@@ -552,15 +560,6 @@ ISR(TIMER2_COMP_vect) {
   case STATE_MENU_PARAMETERS:
     display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
                  display_segment_numbers[settings.e[menu_idx] % 10]);
-    break;
-  case STATE_MENU_TEMP_CHANGE:
-    if (display_enable) {
-      display_menu(display_segment_numbers[settings.temp % 100 / 10],
-                   display_segment_numbers[settings.temp % 10]);
-    } else {
-      display_menu(display_segment_numbers[11],
-                   display_segment_numbers[11]);
-    }
     break;
   }
 }
