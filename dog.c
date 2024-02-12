@@ -237,10 +237,8 @@ int main(void) {
     //   DDRB = 0xFF;
     // }
 
-    if (state == STATE_MENU) {
-      if (settings.p.factory_settings) {
-        settings_reset();
-      }
+    if (settings.p.factory_settings) {
+      settings_reset();
     }
   }
 
@@ -278,25 +276,34 @@ void init_timer(void) {
 }
 
 void read_temperature(void) {
+  static u32 start_time = 0;
+  if (!start_time) {
+    start_time = time;
+  }
+
   ds18b20_reset();
   ds18b20_write(0xCC); // Проверка кода датчика
   ds18b20_write(0x44); // Запуск температурного преобразования
 
-  _delay_ms(750); // Задержка на опрос датчика
+  u32 sleep_duration = time - start_time;
+  if (sleep_duration >= 750) {
+    ds18b20_reset();
+    ds18b20_write(0xCC); // Проверка кода датчика
+    ds18b20_write(0xBE); // Считываем содержимое ОЗУ
 
-  ds18b20_reset();
-  ds18b20_write(0xCC); // Проверка кода датчика
-  ds18b20_write(0xBE); // Считываем содержимое ОЗУ
+    Temp_LSB = ds18b20_read(); // Читаем первые 2 байта блокнота
+    Temp_MSB = ds18b20_read();
 
-  Temp_LSB = ds18b20_read(); // Читаем первые 2 байта блокнота
-  Temp_MSB = ds18b20_read();
+    // Вычисляем целое значение температуры
+    temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
+    // temp ^= 1;
 
-  // Вычисляем целое значение температуры
-  temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
+    // temp = (Temp_LSB & 0x0F);
+    // temp_point = temp * 625 / 1000; // Точность
+    // темпер.преобразования(0.0625)
 
-  // temp = (Temp_LSB & 0x0F);
-  // temp_point = temp * 625 / 1000; // Точность
-  // темпер.преобразования(0.0625)
+    start_time = 0;
+  }
 }
 
 void display_menu(u8 display1, u8 display2) {
