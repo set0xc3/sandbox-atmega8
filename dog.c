@@ -236,10 +236,6 @@ int main(void) {
     //   PORTD = (1 << display_idx);
     //   DDRB = 0xFF;
     // }
-
-    if (settings.p.factory_settings) {
-      settings_reset();
-    }
   }
 
   return 0;
@@ -286,7 +282,7 @@ void read_temperature(void) {
   ds18b20_write(0x44); // Запуск температурного преобразования
 
   u32 sleep_duration = time - start_time;
-  if (sleep_duration >= 750) {
+  if (sleep_duration >= 1000) {
     ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0xBE); // Считываем содержимое ОЗУ
@@ -674,6 +670,10 @@ ISR(TIMER1_COMPA_vect) {
       state = STATE_MAIN;
       menu_timer_enable = 0;
       menu_seconds = 0;
+
+      if (settings.p.factory_settings) {
+        settings_reset();
+      }
     }
   } else {
     menu_seconds = 0;
