@@ -209,6 +209,12 @@ int main(void) {
     read_temperature();
     handle_buttons();
 
+    if (state == STATE_MAIN) {
+      if (settings.p.factory_settings == 1) {
+        settings_reset();
+      }
+    }
+
     // РАСТОПКА
     if (temp < 35) {
       // Включить вентилятор
@@ -273,16 +279,23 @@ void init_timer(void) {
 
 void read_temperature(void) {
   static u32 start_time = 0;
+  static b8 wait = 0;
+
   if (!start_time) {
     start_time = time;
   }
 
-  ds18b20_reset();
-  ds18b20_write(0xCC); // Проверка кода датчика
-  ds18b20_write(0x44); // Запуск температурного преобразования
+  if (!wait) {
+    wait = 1;
+    ds18b20_reset();
+    ds18b20_write(0xCC); // Проверка кода датчика
+    ds18b20_write(0x44); // Запуск температурного преобразования
+  }
 
   u32 sleep_duration = time - start_time;
   if (sleep_duration >= 1000) {
+    wait = 0;
+
     ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0xBE); // Считываем содержимое ОЗУ
@@ -642,7 +655,7 @@ void ds18b20_write(u8 data) {
 
 ISR(TIMER1_COMPA_vect) {
   static u32 start_time = 0;
-
+  
   prev_time = time;
 
   time += 1;
@@ -670,10 +683,6 @@ ISR(TIMER1_COMPA_vect) {
       state = STATE_MAIN;
       menu_timer_enable = 0;
       menu_seconds = 0;
-
-      if (settings.p.factory_settings) {
-        settings_reset();
-      }
     }
   } else {
     menu_seconds = 0;
