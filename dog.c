@@ -74,7 +74,7 @@ typedef i8 b8;
 #define PIN_OW_PORT PORTD
 
 // Массив значениий для семисегментного индикатора
-char display_segment_numbers[12] = {
+static char display_segment_numbers[12] = {
     0b11111100, // 0
     0b01100000, // 1
     0b11011010, // 2
@@ -89,7 +89,7 @@ char display_segment_numbers[12] = {
     0b00000000, // пусто
 };
 
-char display_segment_menu[10][2] = {
+static char display_segment_menu[10][2] = {
     {0b10011100, 0b11001111}, // CP
     {0b11001110, 0b11001111}, // PP
     {0b11111100, 0b00111111}, // Ob
@@ -160,44 +160,43 @@ typedef union Settings {
 } Settings; // 10-bytes
 
 // Глобальные переменные
-volatile u8 display_idx = 0;
-volatile u8 display_enable = 1;
+static u8 display_idx = 0;
+static u8 display_enable = 1;
 
-volatile Parameters menu_idx = CP;
-volatile u8 menu_seconds = 0; // 2s
-volatile u8 menu_timer_enable = 0;
+static Parameters menu_idx = CP;
+static u8 menu_seconds = 0; // 2s
+static u8 menu_timer_enable = 0;
 
-volatile u8 buttons[BUTTON_COUNT] = {0};
-volatile u8 last_buttons[BUTTON_COUNT] = {0};
+static State state = STATE_MAIN;
+static Settings settings;
 
-volatile State state = STATE_MAIN;
-
-volatile Settings settings = {0};
+volatile u8 buttons[BUTTON_COUNT];
+volatile u8 last_buttons[BUTTON_COUNT];
 
 volatile u32 prev_time, time = 0;
 
-volatile u8 temp = 0;
-volatile u8 target_temp = 0;
-volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag = 0;
-// volatile u32 temp_point = 0; // Переменная для дробного значения температуры
+static volatile u8 temp;
+static volatile u8 target_temp;
+static volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag;
+// static u32 temp_point; // Переменная для дробного значения температуры
 
 // Прототипы функций
-void init_IO(void);
-void init_timer(void);
-void read_temperature(void);
-void display_menu(u8 display1, u8 display2);
-void handle_buttons(void);
+static void init_IO(void);
+static void init_timer(void);
+static void read_temperature(void);
+static void display_menu(u8 display1, u8 display2);
+static void handle_buttons(void);
 
-void settings_reset(void);
-void settings_change_params(i8 value);
+static void settings_reset(void);
+static void settings_change_params(i8 value);
 
-u8 button_pressed(u8 code);
-u8 button_released(u8 code);
-u8 button_down(u8 code);
+static u8 button_pressed(u8 code);
+static u8 button_released(u8 code);
+static u8 button_down(u8 code);
 
-u8 ds18b20_reset(void);
-u8 ds18b20_read(void);
-void ds18b20_write(u8 data);
+static u8 ds18b20_reset(void);
+static u8 ds18b20_read(void);
+static void ds18b20_write(u8 data);
 
 int main(void) {
   settings_reset();
@@ -565,7 +564,7 @@ u8 button_down(u8 code) { return last_buttons[code] && buttons[code]; }
 
 // Инициализация DS18B20
 u8 ds18b20_reset(void) {
-  static u8 retries = 125;
+  u8 retries = 125;
 
   DISABLE_INTERRUPTS();
 
@@ -608,7 +607,9 @@ u8 ds18b20_reset(void) {
 // Функция чтения байта из DS18B20
 u8 ds18b20_read(void) {
   u8 res = 0;
-  for (u8 i = 0; i < 8; i++) {
+  u8 i = 0;
+
+  for (i = 8; i > 0; i -= 1) {
     DISABLE_INTERRUPTS();
 
     PIN_OW_DDR |= (1 << PIN_OW); // выход
@@ -629,7 +630,9 @@ u8 ds18b20_read(void) {
 
 // Функция записи байта в DS18B20
 void ds18b20_write(u8 data) {
-  for (u8 i = 0; i < 8; i++) {
+  u8 i = 0;
+
+  for (i = 8; i > 0; i -= 1) {
 
     DISABLE_INTERRUPTS();
 
