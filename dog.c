@@ -103,7 +103,7 @@ static char display_segment_menu[10][2] = {
 };
 
 typedef enum Mode {
-  MODE_NONE,
+  MODE_STOP,
   MODE_RASTOPKA,
   MODE_CONTROL,
 } Mode;
@@ -167,6 +167,7 @@ static Parameters menu_idx = CP;
 static u8 menu_seconds = 0; // 2s
 static u8 menu_timer_enable = 0;
 
+static Mode mode = MODE_STOP;
 static State state = STATE_MAIN;
 static Settings settings;
 
@@ -205,6 +206,31 @@ int main(void) {
   init_timer();
 
   while (1) {
+    // Проверить устройство на линии
+    {
+      if (!ds18b20_reset()) {
+        state = STATE_ALARM;
+      } else {
+        b8 ok = false;
+
+        ds18b20_write(0xF0); // Просто отправляем команду поиска устройства
+
+        DISABLE_INTERRUPTS();
+        PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
+        PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
+        _delay_us(3);
+        PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+        _delay_us(10);
+        ok = !(PIN_OW_READ & (1 << PIN_OW));
+        ENABLE_INTERRUPTS();
+        _delay_us(53);
+
+        if (!ok) {
+          state = STATE_ALARM;
+        }
+      }
+    }
+
     read_temperature();
     handle_buttons();
 
@@ -214,11 +240,34 @@ int main(void) {
       }
     }
 
-    // РАСТОПКА
-    if (temp < 35) {
-      // Включить вентилятор
-    } else if (temp >= 35) {
-      // КОНТРОЛЬ
+    if (mode == MODE_STOP) {
+      PIN_STATE_HIGH(PORTC, PC0);
+      PIN_STATE_LOW(PORTC, PC1);
+      PIN_STATE_LOW(PORTC, PC2);
+      PIN_STATE_LOW(PORTC, PC3);
+      PIN_STATE_LOW(PORTC, PC4);
+      PIN_STATE_LOW(PORTC, PC5);
+    } else if (mode == MODE_RASTOPKA) {
+      // РАСТОПКА
+      if (temp < 35) {
+        PIN_STATE_LOW(PORTC, PC0);
+        PIN_STATE_HIGH(PORTC, PC1);
+        PIN_STATE_LOW(PORTC, PC2);
+        PIN_STATE_LOW(PORTC, PC3);
+        PIN_STATE_LOW(PORTC, PC4);
+        PIN_STATE_LOW(PORTC, PC5);
+        // Включить вентилятор
+      } else if (temp >= 35) {
+        // КОНТРОЛЬ
+        mode = MODE_CONTROL;
+        PIN_STATE_LOW(PORTC, PC0);
+        PIN_STATE_LOW(PORTC, PC1);
+        PIN_STATE_HIGH(PORTC, PC2);
+        PIN_STATE_LOW(PORTC, PC3);
+        PIN_STATE_LOW(PORTC, PC4);
+        PIN_STATE_LOW(PORTC, PC5);
+      }
+    } else if (mode == MODE_CONTROL) {
       if (temp >= target_temp) {
         // Выключаем вентилятор
       }
@@ -353,6 +402,8 @@ void handle_buttons(void) {
   case STATE_MAIN: {
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
+
+      mode = mode == MODE_STOP ? MODE_RASTOPKA : MODE_STOP;
     } else if (button_released(BUTTON_MENU)) {
       if (state != STATE_MENU) {
         menu_timer_enable = 0;
@@ -658,7 +709,7 @@ void ds18b20_write(u8 data) {
 
 ISR(TIMER1_COMPA_vect) {
   static u32 start_time = 0;
-  
+
   prev_time = time;
 
   time += 1;
@@ -709,6 +760,10 @@ ISR(TIMER2_COMP_vect) {
   case STATE_MENU_PARAMETERS:
     display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
                  display_segment_numbers[settings.e[menu_idx] % 10]);
+    break;
+    case STATE_ALARM:
+    display_menu(display_segment_numbers[10],
+                 display_segment_numbers[10]);
     break;
   }
 }
