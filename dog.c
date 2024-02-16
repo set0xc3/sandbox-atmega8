@@ -198,6 +198,7 @@ static u8 button_down(u8 code);
 static u8 ds18b20_reset(void);
 static u8 ds18b20_read(void);
 static void ds18b20_write(u8 data);
+static b8 ds18b20_is_live(void);
 
 int main(void) {
   settings_reset();
@@ -206,29 +207,12 @@ int main(void) {
   init_timer();
 
   while (1) {
+    ENABLE_INTERRUPTS();
+
     // Проверить устройство на линии
-    {
-      if (!ds18b20_reset()) {
-        state = STATE_ALARM;
-      } else {
-        b8 ok = false;
-
-        ds18b20_write(0xF0); // Просто отправляем команду поиска устройства
-
-        DISABLE_INTERRUPTS();
-        PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
-        PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
-        _delay_us(3);
-        PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
-        _delay_us(10);
-        ok = !(PIN_OW_READ & (1 << PIN_OW));
-        ENABLE_INTERRUPTS();
-        _delay_us(53);
-
-        if (!ok) {
-          state = STATE_ALARM;
-        }
-      }
+    if (!ds18b20_is_live()) {
+      state = STATE_ALARM;
+      continue;
     }
 
     read_temperature();
@@ -615,38 +599,35 @@ u8 button_down(u8 code) { return last_buttons[code] && buttons[code]; }
 
 // Инициализация DS18B20
 u8 ds18b20_reset(void) {
-  u8 retries = 125;
+  u8 retries = 255;
 
   DISABLE_INTERRUPTS();
 
   PIN_OW_DDR &= ~(1 << PIN_OW); // вход
 
-  ENABLE_INTERRUPTS();
-
   // wait until the wire is high... just in case
   do {
-    if (--retries == 0)
+    if (--retries == 0) {
       return 0;
-    _delay_us(2);
-  } while (!(PIN_OW_READ & (1 << PIN_OW)));
+    }
 
-  DISABLE_INTERRUPTS();
+    _delay_us(2);
+
+  } while (!(PIN_OW_READ & (1 << PIN_OW)));
 
   PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
   PIN_OW_DDR |= (1 << PIN_OW); // выход
-
-  ENABLE_INTERRUPTS();
+  // ENABLE_INTERRUPTS();
 
   _delay_us(480);
 
-  DISABLE_INTERRUPTS();
-
+  // DISABLE_INTERRUPTS();
   PIN_OW_DDR &= ~(1 << PIN_OW); // вход
 
   _delay_us(60);
 
-  OK_Flag = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
   // если OK_Flag = 0 датчик подключен, OK_Flag = 1 датчик не подключен
+  OK_Flag = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
 
   ENABLE_INTERRUPTS();
 
@@ -664,9 +645,13 @@ u8 ds18b20_read(void) {
     DISABLE_INTERRUPTS();
 
     PIN_OW_DDR |= (1 << PIN_OW); // выход
+
     _delay_us(2);
+
     PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+
     _delay_us(8);
+
     res = res >> 1; // Следующий бит
     if (PIN_OW_READ & (1 << PIN_OW)) {
       res |= 0x80;
@@ -684,10 +669,10 @@ void ds18b20_write(u8 data) {
   u8 i = 0;
 
   for (i = 8; i > 0; i -= 1) {
-
     DISABLE_INTERRUPTS();
 
     PIN_OW_DDR |= (1 << PIN_OW); // выход
+
     _delay_us(2);
 
     if (data & 0x01) {
@@ -697,6 +682,7 @@ void ds18b20_write(u8 data) {
     }
 
     data = data >> 1; // Следующий бит
+
     _delay_us(60);
 
     PIN_OW_DDR &= ~(1 << PIN_OW); // вход
@@ -705,6 +691,39 @@ void ds18b20_write(u8 data) {
 
     _delay_us(2);
   }
+}
+
+b8 ds18b20_is_live(void) {
+  b8 ok = false;
+
+  if (!ds18b20_reset()) {
+    return false;
+  } else {
+    ds18b20_write(0xF0); // Отправляем команду поиска устройства
+
+    DISABLE_INTERRUPTS();
+
+    PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
+    PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
+
+    _delay_us(3);
+
+    PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+
+    _delay_us(10);
+
+    ok = !(PIN_OW_READ & (1 << PIN_OW));
+
+    ENABLE_INTERRUPTS();
+
+    _delay_us(53);
+
+    if (!ok) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 ISR(TIMER1_COMPA_vect) {
@@ -761,9 +780,8 @@ ISR(TIMER2_COMP_vect) {
     display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
                  display_segment_numbers[settings.e[menu_idx] % 10]);
     break;
-    case STATE_ALARM:
-    display_menu(display_segment_numbers[10],
-                 display_segment_numbers[10]);
+  case STATE_ALARM:
+    display_menu(display_segment_numbers[10], display_segment_numbers[10]);
     break;
   }
 }
