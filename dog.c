@@ -207,11 +207,11 @@ int main(void) {
   init_timer();
 
   while (1) {
-    ENABLE_INTERRUPTS();
-
     // Проверить устройство на линии
     if (!ds18b20_is_live()) {
       state = STATE_ALARM;
+      ENABLE_INTERRUPTS();
+      _delay_ms(1000);
       continue;
     }
 
@@ -617,11 +617,9 @@ u8 ds18b20_reset(void) {
 
   PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
   PIN_OW_DDR |= (1 << PIN_OW); // выход
-  // ENABLE_INTERRUPTS();
 
   _delay_us(480);
 
-  // DISABLE_INTERRUPTS();
   PIN_OW_DDR &= ~(1 << PIN_OW); // вход
 
   _delay_us(60);
@@ -696,9 +694,9 @@ void ds18b20_write(u8 data) {
 b8 ds18b20_is_live(void) {
   b8 ok = false;
 
-  if (!ds18b20_reset()) {
-    return false;
-  } else {
+  ok = ds18b20_reset();
+
+  if (ok) {
     ds18b20_write(0xF0); // Отправляем команду поиска устройства
 
     DISABLE_INTERRUPTS();
@@ -714,16 +712,14 @@ b8 ds18b20_is_live(void) {
 
     ok = !(PIN_OW_READ & (1 << PIN_OW));
 
-    ENABLE_INTERRUPTS();
-
     _delay_us(53);
-
-    if (!ok) {
-      return false;
-    }
+  } else {
+    ok = false;
   }
 
-  return true;
+  ENABLE_INTERRUPTS();
+
+  return ok;
 }
 
 ISR(TIMER1_COMPA_vect) {
