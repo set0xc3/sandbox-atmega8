@@ -1,34 +1,35 @@
 // BASE
 
-typedef unsigned char u8;
-typedef unsigned short u16;
-typedef unsigned int u32;
+typedef unsigned char      u8;
+typedef unsigned short     u16;
+typedef unsigned int       u32;
 typedef unsigned long long u64;
 
-typedef signed char i8;
-typedef signed short i16;
-typedef signed int i32;
+typedef signed char      i8;
+typedef signed short     i16;
+typedef signed int       i32;
 typedef signed long long i64;
 
-typedef float f32;
+typedef float  f32;
 typedef double f64;
 
 typedef i8 b8;
 
 #define false 0
-#define true 1
+#define true  1
 
-#define PIN_MODE_INPUT(port, pin)                                              \
+#define PIN_MODE_INPUT(port, pin)                                             \
   ((port) &= ~(1 << (pin))) // Макрос для установки пина как вход
-#define PIN_MODE_OUTPUT(port, pin)                                             \
+#define PIN_MODE_OUTPUT(port, pin)                                            \
   ((port) |= (1 << (pin))) // Макрос для установки пина как выход
-#define PIN_STATE_LOW(port, pin)                                               \
-  ((port) &=                                                                   \
-   ~(1 << (pin))) // Макрос для установки пина в состояние "низкий уровень"
-#define PIN_STATE_HIGH(port, pin)                                              \
-  ((port) |=                                                                   \
-   (1 << (pin))) // Макрос для установки пина в состояние "высокий уровень"
-#define PIN_READ(port, pin)                                                    \
+#define PIN_STATE_LOW(port, pin)                                              \
+  ((port) &= ~(                                                               \
+       1 << (pin))) // Макрос для установки пина в состояние "низкий уровень"
+#define PIN_STATE_HIGH(port, pin)                                             \
+  ((port)                                                                     \
+   |= (1                                                                      \
+       << (pin))) // Макрос для установки пина в состояние "высокий уровень"
+#define PIN_READ(port, pin)                                                   \
   ((port & (1 << pin))) // Макрос для чтения данных с пина
 
 // BASE
@@ -40,66 +41,66 @@ typedef i8 b8;
 #include <string.h>
 #include <util/delay.h>
 
-#define ENABLE_INTERRUPTS() sei()
+#define ENABLE_INTERRUPTS()  sei()
 #define DISABLE_INTERRUPTS() cli()
 
 #define ARRAY_COUNT(a) (sizeof((a)) / sizeof(*(a)))
 
-#define CLAMP(value, min, max)                                                 \
+#define CLAMP(value, min, max)                                                \
   ((value <= min) ? min : (value >= max) ? max : value)
 #define CLAMP_TOP(value, max) ((value >= max) ? max : value)
 
 // Пины для кнопок
-#define PIN_BUTTON_UP PD5
+#define PIN_BUTTON_UP   PD5
 #define PIN_BUTTON_MENU PD6
 #define PIN_BUTTON_DOWN PD7
 #define PIN_BUTTON_READ PIND
-#define PIN_BUTTON_DDR DDRD
+#define PIN_BUTTON_DDR  DDRD
 #define PIN_BUTTON_PORT PORTD
 
 // Пины для индикации
-#define PIN_LED_STOP PC0
+#define PIN_LED_STOP     PC0
 #define PIN_LED_RASTOPKA PC1
-#define PIN_LED_CONTROL PC2
-#define PIN_LED_ALARM PC3
-#define PIN_LED_PUMP PC4
-#define PIN_LED_FAN PC5
-#define PIN_LED_DDR DDRC
-#define PIN_LED_PORT PORTC
+#define PIN_LED_CONTROL  PC2
+#define PIN_LED_ALARM    PC3
+#define PIN_LED_PUMP     PC4
+#define PIN_LED_FAN      PC5
+#define PIN_LED_DDR      DDRC
+#define PIN_LED_PORT     PORTC
 
 // Пины для термодатчика
-#define PIN_OW PD2
+#define PIN_OW      PD2
 #define PIN_OW_READ PIND
-#define PIN_OW_DDR DDRD
+#define PIN_OW_DDR  DDRD
 #define PIN_OW_PORT PORTD
 
 // Массив значениий для семисегментного индикатора
 static char display_segment_numbers[12] = {
-    0b11111100, // 0
-    0b01100000, // 1
-    0b11011010, // 2
-    0b11110010, // 3
-    0b01100110, // 4
-    0b10110110, // 5
-    0b10111110, // 6
-    0b11100000, // 7
-    0b11111110, // 8
-    0b11110110, // 9
-    0b00000010, // -
-    0b00000000, // пусто
+  0b11111100, // 0
+  0b01100000, // 1
+  0b11011010, // 2
+  0b11110010, // 3
+  0b01100110, // 4
+  0b10110110, // 5
+  0b10111110, // 6
+  0b11100000, // 7
+  0b11111110, // 8
+  0b11110110, // 9
+  0b00000010, // -
+  0b00000000, // пусто
 };
 
 static char display_segment_menu[10][2] = {
-    {0b10011100, 0b11001111}, // CP
-    {0b11001110, 0b11001111}, // PP
-    {0b11111100, 0b00111111}, // Ob
-    {0b11111100, 0b11001111}, // OP
-    {0b00011110, 0b11001111}, // TP
-    {0b01101110, 0b00001101}, // HI
-    {0b00011110, 0b11111101}, // TO
-    {0b00011110, 0b01111101}, // TU
-    {0b00111110, 0b01111101}, // bU
-    {0b01111100, 0b10001111}, // UF
+  { 0b10011100, 0b11001111 }, // CP
+  { 0b11001110, 0b11001111 }, // PP
+  { 0b11111100, 0b00111111 }, // Ob
+  { 0b11111100, 0b11001111 }, // OP
+  { 0b00011110, 0b11001111 }, // TP
+  { 0b01101110, 0b00001101 }, // HI
+  { 0b00011110, 0b11111101 }, // TO
+  { 0b00011110, 0b01111101 }, // TU
+  { 0b00111110, 0b01111101 }, // bU
+  { 0b01111100, 0b10001111 }, // UF
 };
 
 typedef enum Mode {
@@ -160,15 +161,15 @@ typedef union Settings {
 } Settings; // 10-bytes
 
 // Глобальные переменные
-static u8 display_idx = 0;
+static u8 display_idx    = 0;
 static u8 display_enable = 1;
 
-static Parameters menu_idx = CP;
-static u8 menu_seconds = 0; // 2s
-static u8 menu_timer_enable = 0;
+static Parameters menu_idx          = CP;
+static u8         menu_seconds      = 0; // 2s
+static u8         menu_timer_enable = 0;
 
-static Mode mode = MODE_STOP;
-static State state = STATE_MAIN;
+static Mode     mode  = MODE_STOP;
+static State    state = STATE_MAIN;
 static Settings settings;
 
 volatile u8 buttons[BUTTON_COUNT];
@@ -195,12 +196,14 @@ static u8 button_pressed(u8 code);
 static u8 button_released(u8 code);
 static u8 button_down(u8 code);
 
-static u8 ds18b20_reset(void);
-static u8 ds18b20_read(void);
+static u8   ds18b20_reset(void);
+static u8   ds18b20_read(void);
 static void ds18b20_write(u8 data);
-static b8 ds18b20_is_live(void);
+static b8   ds18b20_is_live(void);
 
-int main(void) {
+int
+main(void)
+{
   settings_reset();
 
   init_IO();
@@ -221,39 +224,6 @@ int main(void) {
     if (state == STATE_MAIN) {
       if (settings.p.factory_settings == 1) {
         settings_reset();
-      }
-    }
-
-    if (mode == MODE_STOP) {
-      PIN_STATE_HIGH(PORTC, PC0);
-      PIN_STATE_LOW(PORTC, PC1);
-      PIN_STATE_LOW(PORTC, PC2);
-      PIN_STATE_LOW(PORTC, PC3);
-      PIN_STATE_LOW(PORTC, PC4);
-      PIN_STATE_LOW(PORTC, PC5);
-    } else if (mode == MODE_RASTOPKA) {
-      // РАСТОПКА
-      if (temp < 35) {
-        PIN_STATE_LOW(PORTC, PC0);
-        PIN_STATE_HIGH(PORTC, PC1);
-        PIN_STATE_LOW(PORTC, PC2);
-        PIN_STATE_LOW(PORTC, PC3);
-        PIN_STATE_LOW(PORTC, PC4);
-        PIN_STATE_LOW(PORTC, PC5);
-        // Включить вентилятор
-      } else if (temp >= 35) {
-        // КОНТРОЛЬ
-        mode = MODE_CONTROL;
-        PIN_STATE_LOW(PORTC, PC0);
-        PIN_STATE_LOW(PORTC, PC1);
-        PIN_STATE_HIGH(PORTC, PC2);
-        PIN_STATE_LOW(PORTC, PC3);
-        PIN_STATE_LOW(PORTC, PC4);
-        PIN_STATE_LOW(PORTC, PC5);
-      }
-    } else if (mode == MODE_CONTROL) {
-      if (temp >= target_temp) {
-        // Выключаем вентилятор
       }
     }
 
@@ -279,20 +249,24 @@ int main(void) {
   return 0;
 }
 
-void init_IO(void) {
+void
+init_IO(void)
+{
   // Настройка пинов для кнопок
-  PIN_BUTTON_DDR &=
-      ~(1 << PIN_BUTTON_MENU) | (1 << PIN_BUTTON_UP) | (1 << PIN_BUTTON_DOWN);
+  PIN_BUTTON_DDR &= ~(1 << PIN_BUTTON_MENU) | (1 << PIN_BUTTON_UP)
+                    | (1 << PIN_BUTTON_DOWN);
   // PORTD |= (1 << PIN_BUTTON_MENU) | (1 << PIN_BUTTON_UP) | (1 <<
   // PIN_BUTTON_DOWN);
 
   // Настройка пинов для индикации
-  PIN_LED_DDR |= (1 << PIN_LED_STOP) | (1 << PIN_LED_RASTOPKA) |
-                 (1 << PIN_LED_CONTROL) | (1 << PIN_LED_ALARM) |
-                 (1 << PIN_LED_PUMP) | (1 << PIN_LED_FAN);
+  PIN_LED_DDR |= (1 << PIN_LED_STOP) | (1 << PIN_LED_RASTOPKA)
+                 | (1 << PIN_LED_CONTROL) | (1 << PIN_LED_ALARM)
+                 | (1 << PIN_LED_PUMP) | (1 << PIN_LED_FAN);
 }
 
-void init_timer(void) {
+void
+init_timer(void)
+{
   // Настройка Timer1
   TCCR1B = (1 << WGM12) | (1 << CS11); // Prescaler 8
   TIMSK |= (1 << OCIE1A);
@@ -300,8 +274,8 @@ void init_timer(void) {
 
   // Настройка Timer2
   // Настройка предделителя и запуск таймера
-  TCCR2 =
-      (1 << WGM21) | (1 << CS22) | (1 << CS21) | (1 << CS20); // Prescaler 1024
+  TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21)
+          | (1 << CS20); // Prescaler 1024
   TIMSK |= (1 << OCIE2);
   OCR2 = 4; // 5ms for 1MHz clock
 
@@ -309,9 +283,11 @@ void init_timer(void) {
   ENABLE_INTERRUPTS();
 }
 
-void read_temperature(void) {
+void
+read_temperature(void)
+{
   static u32 start_time = 0;
-  static b8 wait = 0;
+  static b8  wait       = 0;
 
   if (!start_time) {
     start_time = time;
@@ -347,17 +323,19 @@ void read_temperature(void) {
   }
 }
 
-void display_menu(u8 display1, u8 display2) {
+void
+display_menu(u8 display1, u8 display2)
+{
   if (!display_enable) {
-    DDRD = 0;
+    DDRD  = 0;
     PORTD = 0;
-    DDRB = 0;
+    DDRB  = 0;
     return;
   }
 
   DDRD |= (1 << PD0) | (1 << PD1);
   PORTD = (1 << display_idx);
-  DDRB = 0xFF;
+  DDRB  = 0xFF;
 
   switch (display_idx) {
   case 0:
@@ -373,12 +351,14 @@ void display_menu(u8 display1, u8 display2) {
   display_idx = (display_idx + 1) % 2;
 }
 
-void handle_buttons(void) {
+void
+handle_buttons(void)
+{
   static u32 start_time = 0;
 
   memcpy(&last_buttons, &buttons, sizeof(last_buttons));
 
-  buttons[BUTTON_UP] = PIN_BUTTON_READ & (1 << PIN_BUTTON_UP);
+  buttons[BUTTON_UP]   = PIN_BUTTON_READ & (1 << PIN_BUTTON_UP);
   buttons[BUTTON_MENU] = PIN_BUTTON_READ & (1 << PIN_BUTTON_MENU);
   buttons[BUTTON_DOWN] = PIN_BUTTON_READ & (1 << PIN_BUTTON_DOWN);
 
@@ -391,22 +371,22 @@ void handle_buttons(void) {
     } else if (button_released(BUTTON_MENU)) {
       if (state != STATE_MENU) {
         menu_timer_enable = 0;
-        menu_seconds = 0;
+        menu_seconds      = 0;
       }
     }
 
     if (button_pressed(BUTTON_UP)) {
-      menu_seconds = 0;
-      start_time = time;
-      target_temp = target_temp < 80 ? target_temp + 1 : 80;
-      state = STATE_MENU_TEMP_CHANGE;
+      menu_seconds      = 0;
+      start_time        = time;
+      target_temp       = target_temp < 80 ? target_temp + 1 : 80;
+      state             = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
     if (button_pressed(BUTTON_DOWN)) {
-      menu_seconds = 0;
-      start_time = time;
-      target_temp = target_temp > 35 ? target_temp - 1 : 35;
-      state = STATE_MENU_TEMP_CHANGE;
+      menu_seconds      = 0;
+      start_time        = time;
+      target_temp       = target_temp > 35 ? target_temp - 1 : 35;
+      state             = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
   } break;
@@ -414,27 +394,27 @@ void handle_buttons(void) {
   case STATE_MENU_TEMP_CHANGE: {
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 0;
-      menu_seconds = 0;
-      state = STATE_MAIN;
+      menu_seconds      = 0;
+      state             = STATE_MAIN;
     }
 
     if (button_pressed(BUTTON_UP)) {
-      menu_seconds = 0;
-      start_time = time;
-      target_temp = target_temp < 80 ? target_temp + 1 : 80;
-      state = STATE_MENU_TEMP_CHANGE;
+      menu_seconds      = 0;
+      start_time        = time;
+      target_temp       = target_temp < 80 ? target_temp + 1 : 80;
+      state             = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
     if (button_pressed(BUTTON_DOWN)) {
-      menu_seconds = 0;
-      start_time = time;
-      target_temp = target_temp > 35 ? target_temp - 1 : 35;
-      state = STATE_MENU_TEMP_CHANGE;
+      menu_seconds      = 0;
+      start_time        = time;
+      target_temp       = target_temp > 35 ? target_temp - 1 : 35;
+      state             = STATE_MENU_TEMP_CHANGE;
       menu_timer_enable = 1;
     }
 
     if (button_down(BUTTON_UP)) {
-      menu_seconds = 0;
+      menu_seconds       = 0;
       u32 press_duration = time - start_time;
       if (press_duration >= 800) {
         target_temp = target_temp < 80 ? target_temp + 1 : 80;
@@ -442,7 +422,7 @@ void handle_buttons(void) {
       }
     }
     if (button_down(BUTTON_DOWN)) {
-      menu_seconds = 0;
+      menu_seconds       = 0;
       u32 press_duration = time - start_time;
       if (press_duration >= 800) {
         target_temp = target_temp > 35 ? target_temp - 1 : 35;
@@ -454,7 +434,7 @@ void handle_buttons(void) {
   case STATE_MENU: {
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
-      state = STATE_MENU_PARAMETERS;
+      state        = STATE_MENU_PARAMETERS;
       break;
     }
 
@@ -462,12 +442,12 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_UP)) {
         menu_seconds = 0;
-        start_time = time;
-        menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
+        start_time   = time;
+        menu_idx     = menu_idx < 9 ? menu_idx + 1 : 9;
       }
 
       if (button_down(BUTTON_UP)) {
-        menu_seconds = 0;
+        menu_seconds       = 0;
         u32 press_duration = time - start_time;
         if (press_duration >= 800) {
           menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
@@ -480,12 +460,12 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_DOWN)) {
         menu_seconds = 0;
-        start_time = time;
-        menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
+        start_time   = time;
+        menu_idx     = menu_idx > 0 ? menu_idx - 1 : 0;
       }
 
       if (button_down(BUTTON_DOWN)) {
-        menu_seconds = 0;
+        menu_seconds       = 0;
         u32 press_duration = time - start_time;
         if (press_duration >= 800) {
           menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
@@ -498,7 +478,7 @@ void handle_buttons(void) {
   case STATE_MENU_PARAMETERS: {
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
-      state = STATE_MENU;
+      state        = STATE_MENU;
       break;
     }
 
@@ -506,11 +486,11 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_UP)) {
         menu_seconds = 0;
-        start_time = time;
+        start_time   = time;
         settings_change_params(1);
       }
       if (button_down(BUTTON_UP)) {
-        menu_seconds = 0;
+        menu_seconds       = 0;
         u32 press_duration = time - start_time;
         if (press_duration >= 800) {
           settings_change_params(1);
@@ -523,11 +503,11 @@ void handle_buttons(void) {
     {
       if (button_pressed(BUTTON_DOWN)) {
         menu_seconds = 0;
-        start_time = time;
+        start_time   = time;
         settings_change_params(-1);
       }
       if (button_down(BUTTON_DOWN)) {
-        menu_seconds = 0;
+        menu_seconds       = 0;
         u32 press_duration = time - start_time;
         if (press_duration >= 800) {
           settings_change_params(-1);
@@ -539,21 +519,25 @@ void handle_buttons(void) {
   }
 }
 
-void settings_reset(void) {
-  settings.p.ventilation_work_duration = 10;       // 5-95
-  settings.p.ventilation_pause_duration = 3;       // 1-99
-  settings.p.fan_speed = 99;                       // 30-99
-  settings.p.fan_power_during_ventilation = 90;    // 30-99
-  settings.p.pump_connection_temperature = 40;     // 25-70
-  settings.p.hysteresis = 3;                       // 1-9
-  settings.p.fan_power_reduction = 5;              // 0-10
+void
+settings_reset(void)
+{
+  settings.p.ventilation_work_duration       = 10; // 5-95
+  settings.p.ventilation_pause_duration      = 3;  // 1-99
+  settings.p.fan_speed                       = 99; // 30-99
+  settings.p.fan_power_during_ventilation    = 90; // 30-99
+  settings.p.pump_connection_temperature     = 40; // 25-70
+  settings.p.hysteresis                      = 3;  // 1-9
+  settings.p.fan_power_reduction             = 5;  // 0-10
   settings.p.controller_shutdown_temperature = 30; // 25-50
-  settings.p.sound_signal_enabled = 1;             // 0-1
-  settings.p.factory_settings = 0;                 // 0-1
-  target_temp = 59;
+  settings.p.sound_signal_enabled            = 1;  // 0-1
+  settings.p.factory_settings                = 0;  // 0-1
+  target_temp                                = 59;
 }
 
-void settings_change_params(i8 value) {
+void
+settings_change_params(i8 value)
+{
   switch (menu_idx) {
   case CP:
     settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 5, 95);
@@ -591,14 +575,28 @@ void settings_change_params(i8 value) {
   }
 }
 
-u8 button_pressed(u8 code) { return !last_buttons[code] && buttons[code]; }
+u8
+button_pressed(u8 code)
+{
+  return !last_buttons[code] && buttons[code];
+}
 
-u8 button_released(u8 code) { return last_buttons[code] && !buttons[code]; }
+u8
+button_released(u8 code)
+{
+  return last_buttons[code] && !buttons[code];
+}
 
-u8 button_down(u8 code) { return last_buttons[code] && buttons[code]; }
+u8
+button_down(u8 code)
+{
+  return last_buttons[code] && buttons[code];
+}
 
 // Инициализация DS18B20
-u8 ds18b20_reset(void) {
+u8
+ds18b20_reset(void)
+{
   u8 retries = 255;
 
   DISABLE_INTERRUPTS();
@@ -612,7 +610,6 @@ u8 ds18b20_reset(void) {
     }
 
     _delay_us(2);
-
   } while (!(PIN_OW_READ & (1 << PIN_OW)));
 
   PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
@@ -625,7 +622,8 @@ u8 ds18b20_reset(void) {
   _delay_us(60);
 
   // если OK_Flag = 0 датчик подключен, OK_Flag = 1 датчик не подключен
-  OK_Flag = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
+  OK_Flag
+      = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
 
   ENABLE_INTERRUPTS();
 
@@ -635,9 +633,11 @@ u8 ds18b20_reset(void) {
 }
 
 // Функция чтения байта из DS18B20
-u8 ds18b20_read(void) {
+u8
+ds18b20_read(void)
+{
   u8 res = 0;
-  u8 i = 0;
+  u8 i   = 0;
 
   for (i = 8; i > 0; i -= 1) {
     DISABLE_INTERRUPTS();
@@ -663,7 +663,9 @@ u8 ds18b20_read(void) {
 }
 
 // Функция записи байта в DS18B20
-void ds18b20_write(u8 data) {
+void
+ds18b20_write(u8 data)
+{
   u8 i = 0;
 
   for (i = 8; i > 0; i -= 1) {
@@ -691,7 +693,9 @@ void ds18b20_write(u8 data) {
   }
 }
 
-b8 ds18b20_is_live(void) {
+b8
+ds18b20_is_live(void)
+{
   b8 ok = false;
 
   ok = ds18b20_reset();
@@ -722,7 +726,8 @@ b8 ds18b20_is_live(void) {
   return ok;
 }
 
-ISR(TIMER1_COMPA_vect) {
+ISR(TIMER1_COMPA_vect)
+{
   static u32 start_time = 0;
 
   prev_time = time;
@@ -749,16 +754,17 @@ ISR(TIMER1_COMPA_vect) {
     }
 
     if (menu_seconds >= 5 && state != STATE_MAIN) {
-      state = STATE_MAIN;
+      state             = STATE_MAIN;
       menu_timer_enable = 0;
-      menu_seconds = 0;
+      menu_seconds      = 0;
     }
   } else {
     menu_seconds = 0;
   }
 }
 
-ISR(TIMER2_COMP_vect) {
+ISR(TIMER2_COMP_vect)
+{
   switch (state) {
   case STATE_MAIN:
     display_menu(display_segment_numbers[temp % 100 / 10],
