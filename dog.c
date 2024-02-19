@@ -110,14 +110,11 @@ typedef enum Mode {
 } Mode;
 
 typedef enum State {
-  STATE_MAIN = 0,
+  STATE_HOME = 0,
   STATE_MENU,
   STATE_MENU_TEMP_CHANGE,
   STATE_MENU_PARAMETERS,
-  STATE_HEATING,
-  STATE_VENTILATION,
   STATE_ALARM,
-  STATE_COUNT,
 } State;
 
 typedef enum Button {
@@ -143,8 +140,8 @@ typedef enum Parameters {
 // Структура для хранения параметров меню
 typedef union Settings {
   struct {
-    u8 ventilation_work_duration;  // CP - ПРОДУВКА РАБОТА
-    u8 ventilation_pause_duration; // PP - ПРОДУВКА ПЕРЕРЫВ
+    u8 fan_work_duration;  // CP - ПРОДУВКА РАБОТА
+    u8 fan_pause_duration; // PP - ПРОДУВКА ПЕРЕРЫВ
     u8 fan_speed; // Ob - СКОРОСТЬ ОБОРОТОВ ВЕНТИЛЯТОРА
     u8 fan_power_during_ventilation; // OP - ОБОРОТЫ ВЕНТИЛЯТОРА ВО ВРЕМЯ
                                      // ПРОДУВКИ
@@ -169,7 +166,7 @@ static u8         menu_seconds      = 0; // 2s
 static u8         menu_timer_enable = 0;
 
 static Mode     mode  = MODE_STOP;
-static State    state = STATE_MAIN;
+static State    state = STATE_HOME;
 static Settings settings;
 
 volatile u8 buttons[BUTTON_COUNT];
@@ -183,9 +180,9 @@ static volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag;
 // static u32 temp_point; // Переменная для дробного значения температуры
 
 // Прототипы функций
-static void init_IO(void);
-static void init_timer(void);
-static void read_temperature(void);
+static void init_io(void);
+static void init_timers(void);
+static void get_temp(void);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
 
@@ -201,38 +198,102 @@ static u8   ds18b20_read(void);
 static void ds18b20_write(u8 data);
 static b8   ds18b20_is_live(void);
 
+void leds_init(void);
+
 int
 main(void)
 {
   settings_reset();
 
-  init_IO();
-  init_timer();
+  init_io();
+  init_timers();
+  leds_init();
 
   while (1) {
     // Проверить устройство на линии
     if (!ds18b20_is_live()) {
       state = STATE_ALARM;
       ENABLE_INTERRUPTS();
+      PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
       _delay_ms(1000);
       continue;
     }
 
-    read_temperature();
+    get_temp();
+    if (temp == 0) {
+      _delay_ms(1000);
+      continue;
+    }
+
     handle_buttons();
 
-    if (state == STATE_MAIN) {
+    // Срабатывание защиты!
+    if (temp < settings.p.controller_shutdown_temperature) {
+      state = STATE_ALARM;
+    }
+
+    // Срабатывание защиты!
+    if (temp >= 90) {
+      state = STATE_ALARM;
+    }
+
+    if (state == STATE_HOME) {
       if (settings.p.factory_settings == 1) {
         settings_reset();
       }
     }
 
-    // Срабатывание защиты!
-    if (temp < settings.p.controller_shutdown_temperature) {
+    if (state != STATE_ALARM) {
+      switch (mode) {
+      case MODE_STOP:
+        PIN_LED_PORT = 0;
+        PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
+        break;
+      case MODE_RASTOPKA:
+        PIN_LED_PORT = 0;
+
+        if (temp >= 35) {
+          mode = MODE_CONTROL;
+          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_CONTROL);
+        } else {
+          mode = MODE_RASTOPKA;
+          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_RASTOPKA);
+        }
+        break;
+      case MODE_CONTROL:
+        PIN_LED_PORT = 0;
+
+        if (temp < 35) {
+          mode = MODE_RASTOPKA;
+          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_RASTOPKA);
+        } else {
+          mode = MODE_CONTROL;
+          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_CONTROL);
+
+          if (temp < target_temp - settings.p.hysteresis) {
+            PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_FAN);
+          } else if (temp > target_temp + settings.p.hysteresis) {
+            PIN_STATE_LOW(PIN_LED_PORT, PIN_LED_FAN);
+          }
+        }
+
+        if (temp >= settings.p.pump_connection_temperature) {
+          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_PUMP);
+        } else {
+          PIN_STATE_LOW(PIN_LED_PORT, PIN_LED_PUMP);
+        }
+        break;
+      }
     }
 
-    // Срабатывание защиты!
-    if (temp > 90) {
+    switch (state) {
+    case STATE_ALARM:
+      PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
+      break;
+    default:
+      break;
     }
 
     // if (temp > (20 + settings.p.hysteresis)) {
@@ -250,7 +311,7 @@ main(void)
 }
 
 void
-init_IO(void)
+init_io(void)
 {
   // Настройка пинов для кнопок
   PIN_BUTTON_DDR &= ~(1 << PIN_BUTTON_MENU) | (1 << PIN_BUTTON_UP)
@@ -265,7 +326,7 @@ init_IO(void)
 }
 
 void
-init_timer(void)
+init_timers(void)
 {
   // Настройка Timer1
   TCCR1B = (1 << WGM12) | (1 << CS11); // Prescaler 8
@@ -284,7 +345,7 @@ init_timer(void)
 }
 
 void
-read_temperature(void)
+get_temp(void)
 {
   static u32 start_time = 0;
   static b8  wait       = 0;
@@ -363,7 +424,7 @@ handle_buttons(void)
   buttons[BUTTON_DOWN] = PIN_BUTTON_READ & (1 << PIN_BUTTON_DOWN);
 
   switch (state) {
-  case STATE_MAIN: {
+  case STATE_HOME: {
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
 
@@ -395,7 +456,7 @@ handle_buttons(void)
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 0;
       menu_seconds      = 0;
-      state             = STATE_MAIN;
+      state             = STATE_HOME;
     }
 
     if (button_pressed(BUTTON_UP)) {
@@ -516,14 +577,25 @@ handle_buttons(void)
       }
     }
   } break;
+
+  case STATE_ALARM:
+    if (button_pressed(BUTTON_MENU)) {
+      state        = STATE_HOME;
+      PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
+    }
+    break;
+
+  default:
+    break;
   }
 }
 
 void
 settings_reset(void)
 {
-  settings.p.ventilation_work_duration       = 10; // 5-95
-  settings.p.ventilation_pause_duration      = 3;  // 1-99
+  settings.p.fan_work_duration               = 10; // 5-95
+  settings.p.fan_pause_duration              = 3;  // 1-99
   settings.p.fan_speed                       = 99; // 30-99
   settings.p.fan_power_during_ventilation    = 90; // 30-99
   settings.p.pump_connection_temperature     = 40; // 25-70
@@ -726,6 +798,13 @@ ds18b20_is_live(void)
   return ok;
 }
 
+void
+leds_init(void)
+{
+  PORTC = 0;
+  PIN_STATE_HIGH(PORTC, PIN_LED_STOP);
+}
+
 ISR(TIMER1_COMPA_vect)
 {
   static u32 start_time = 0;
@@ -749,12 +828,12 @@ ISR(TIMER1_COMPA_vect)
       menu_seconds += 1;
     }
 
-    if (menu_seconds >= 2 && state == STATE_MAIN) {
+    if (menu_seconds >= 2 && state == STATE_HOME) {
       state = STATE_MENU;
     }
 
-    if (menu_seconds >= 5 && state != STATE_MAIN) {
-      state             = STATE_MAIN;
+    if (menu_seconds >= 5 && state != STATE_HOME) {
+      state             = STATE_HOME;
       menu_timer_enable = 0;
       menu_seconds      = 0;
     }
@@ -766,7 +845,8 @@ ISR(TIMER1_COMPA_vect)
 ISR(TIMER2_COMP_vect)
 {
   switch (state) {
-  case STATE_MAIN:
+  case STATE_HOME:
+  case STATE_ALARM:
     display_menu(display_segment_numbers[temp % 100 / 10],
                  display_segment_numbers[temp % 10]);
     break;
@@ -782,8 +862,7 @@ ISR(TIMER2_COMP_vect)
     display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
                  display_segment_numbers[settings.e[menu_idx] % 10]);
     break;
-  case STATE_ALARM:
-    display_menu(display_segment_numbers[10], display_segment_numbers[10]);
+  default:
     break;
   }
 }
