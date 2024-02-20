@@ -165,8 +165,8 @@ static Parameters menu_idx          = CP;
 static u8         menu_seconds      = 0; // 2s
 static u8         menu_timer_enable = 0;
 
-static Mode     mode  = MODE_STOP;
-static State    state = STATE_HOME;
+static Mode     mode = MODE_STOP;
+static State    last_state, state = STATE_HOME;
 static Settings settings;
 
 volatile u8 buttons[BUTTON_COUNT];
@@ -179,12 +179,27 @@ static volatile u8 target_temp;
 static volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag;
 // static u32 temp_point; // Переменная для дробного значения температуры
 
+static b8 ds18b20_is_temp_wait = false;
+
 // Прототипы функций
 static void init_io(void);
 static void init_timers(void);
 static void get_temp(void);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
+
+static inline void
+change_state(u8 new_state)
+{
+  last_state = state;
+  state      = new_state;
+}
+
+static inline void
+restore_last_state(void)
+{
+  state = last_state;
+}
 
 static void settings_reset(void);
 static void settings_change_params(i8 value);
@@ -200,6 +215,21 @@ static b8   ds18b20_is_live(void);
 
 void leds_init(void);
 
+typedef struct Timer32 {
+  b8  enable;
+  u32 time_wait;
+  u32 time_work;
+  u32 time_pause;
+} Timer32;
+
+static void timer_start(Timer32 *timer);
+static void timer_callback(Timer32 *timer, void (*func_ptr)(void),
+                           u32 time_callback, b8 loop);
+static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
+                       u32 time_pause, b8 loop);
+
+static Timer32 timer_get_temp;
+
 int
 main(void)
 {
@@ -209,42 +239,64 @@ main(void)
   init_timers();
   leds_init();
 
+  timer_start(&timer_get_temp);
+
   while (1) {
+
+    if (timer_fire(&timer_get_temp, 1000, 0, 0, false)) {
+      temp ^= 1;
+    }
+    continue;
+
     // Проверить устройство на линии
     if (!ds18b20_is_live()) {
-      state = STATE_ALARM;
+      temp = 0;
       ENABLE_INTERRUPTS();
+      change_state(STATE_ALARM);
       PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
       PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
-      _delay_ms(1000);
       continue;
     }
 
     get_temp();
-    if (temp == 0) {
-      _delay_ms(1000);
+    if (!ds18b20_is_temp_wait && temp == 0) {
+      change_state(STATE_ALARM);
+      PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
       continue;
-    }
-
-    handle_buttons();
-
-    // Срабатывание защиты!
-    if (temp < settings.p.controller_shutdown_temperature) {
-      state = STATE_ALARM;
     }
 
     // Срабатывание защиты!
     if (temp >= 90) {
-      state = STATE_ALARM;
-    }
-
-    if (state == STATE_HOME) {
-      if (settings.p.factory_settings == 1) {
-        settings_reset();
-      }
+      change_state(STATE_ALARM);
+      PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
+    } else if (state == STATE_ALARM) {
+      change_state(STATE_HOME);
+      PIN_LED_PORT = 0;
+      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
     }
 
     if (state != STATE_ALARM) {
+      handle_buttons();
+
+      if (state == STATE_HOME) {
+        if (settings.p.factory_settings == 1) {
+          settings_reset();
+        }
+      }
+
+      // Срабатывание защиты!
+      // if (temp < settings.p.controller_shutdown_temperature) {
+      //   change_state(STATE_ALARM);
+      //   PIN_LED_PORT = 0;
+      //   PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
+      //   PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
+      // }
+
       switch (mode) {
       case MODE_STOP:
         PIN_LED_PORT = 0;
@@ -285,15 +337,6 @@ main(void)
         }
         break;
       }
-    }
-
-    switch (state) {
-    case STATE_ALARM:
-      PIN_LED_PORT = 0;
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
-      break;
-    default:
-      break;
     }
 
     // if (temp > (20 + settings.p.hysteresis)) {
@@ -347,23 +390,15 @@ init_timers(void)
 void
 get_temp(void)
 {
-  static u32 start_time = 0;
-  static b8  wait       = 0;
-
-  if (!start_time) {
-    start_time = time;
-  }
-
-  if (!wait) {
-    wait = 1;
+  if (!ds18b20_is_temp_wait) {
+    ds18b20_is_temp_wait = true;
     ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0x44); // Запуск температурного преобразования
   }
 
-  u32 sleep_duration = time - start_time;
-  if (sleep_duration >= 1000) {
-    wait = 0;
+  if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
+    ds18b20_is_temp_wait = false;
 
     ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
@@ -379,8 +414,6 @@ get_temp(void)
     // temp = (Temp_LSB & 0x0F);
     // temp_point = temp * 625 / 1000; // Точность
     // темпер.преобразования(0.0625)
-
-    start_time = 0;
   }
 }
 
@@ -428,7 +461,13 @@ handle_buttons(void)
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
 
-      mode = mode == MODE_STOP ? MODE_RASTOPKA : MODE_STOP;
+      if (last_state != STATE_MENU_PARAMETERS) {
+        if (mode == MODE_STOP) {
+          mode = MODE_RASTOPKA;
+        } else {
+          mode = MODE_STOP;
+        }
+      }
     } else if (button_released(BUTTON_MENU)) {
       if (state != STATE_MENU) {
         menu_timer_enable = 0;
@@ -578,7 +617,7 @@ handle_buttons(void)
     }
   } break;
 
-  case STATE_ALARM:
+  case STATE_ALARM: {
     if (button_pressed(BUTTON_MENU)) {
       state        = STATE_HOME;
       PIN_LED_PORT = 0;
@@ -589,13 +628,14 @@ handle_buttons(void)
   default:
     break;
   }
+  }
 }
 
 void
 settings_reset(void)
 {
-  settings.p.fan_work_duration               = 10; // 5-95
-  settings.p.fan_pause_duration              = 3;  // 1-99
+  settings.p.fan_work_duration               = 10; // 5-95 seconds
+  settings.p.fan_pause_duration              = 3;  // 1-99 minutes
   settings.p.fan_speed                       = 99; // 30-99
   settings.p.fan_power_during_ventilation    = 90; // 30-99
   settings.p.pump_connection_temperature     = 40; // 25-70
@@ -669,20 +709,7 @@ button_down(u8 code)
 u8
 ds18b20_reset(void)
 {
-  u8 retries = 255;
-
   DISABLE_INTERRUPTS();
-
-  PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-
-  // wait until the wire is high... just in case
-  do {
-    if (--retries == 0) {
-      return 0;
-    }
-
-    _delay_us(2);
-  } while (!(PIN_OW_READ & (1 << PIN_OW)));
 
   PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
   PIN_OW_DDR |= (1 << PIN_OW); // выход
@@ -805,6 +832,46 @@ leds_init(void)
   PIN_STATE_HIGH(PORTC, PIN_LED_STOP);
 }
 
+void
+timer_start(Timer32 *timer)
+{
+  timer->enable    = true;
+  timer->time_wait = time;
+}
+
+void
+timer_callback(Timer32 *timer, void (*func_ptr)(void), u32 time_callback,
+               b8 loop)
+{
+  if (timer->enable && time - timer->time_wait >= time_callback) {
+    func_ptr();
+    timer_start(timer);
+    timer->enable = loop;
+  }
+}
+
+b8
+timer_fire(Timer32 *timer, u32 time_wait, u32 time_work, u32 time_pause,
+           b8 loop)
+{
+  b8 res = false;
+
+  if ((timer->time_wait && time - timer->time_wait >= time_wait)
+      || !time_wait) {
+    timer->time_work = time;
+    timer->time_wait = 0;
+    res              = true;
+  }
+
+  // if ((timer->time_work && time - timer->time_work <= time_work)
+  //     || (timer->time_work && !time_work)) {
+  //   timer->time_work = 0;
+  //   res              = true;
+  // }
+
+  return tue;
+}
+
 ISR(TIMER1_COMPA_vect)
 {
   static u32 start_time = 0;
@@ -829,11 +896,11 @@ ISR(TIMER1_COMPA_vect)
     }
 
     if (menu_seconds >= 2 && state == STATE_HOME) {
-      state = STATE_MENU;
+      change_state(STATE_MENU);
     }
 
     if (menu_seconds >= 5 && state != STATE_HOME) {
-      state             = STATE_HOME;
+      change_state(STATE_HOME);
       menu_timer_enable = 0;
       menu_seconds      = 0;
     }
