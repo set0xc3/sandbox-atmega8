@@ -216,17 +216,14 @@ static b8   ds18b20_is_live(void);
 void leds_init(void);
 
 typedef struct Timer32 {
-  b8  enable;
+  b8  is_fire_done;
   u32 time_wait;
   u32 time_work;
-  u32 time_pause;
+  u32 time_sleep;
 } Timer32;
 
-static void timer_start(Timer32 *timer);
-static void timer_callback(Timer32 *timer, void (*func_ptr)(void),
-                           u32 time_callback, b8 loop);
-static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
-                       u32 time_pause, b8 loop);
+static b8 timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
+                     u32 time_sleep, b8 loop);
 
 static Timer32 timer_get_temp;
 
@@ -239,14 +236,20 @@ main(void)
   init_timers();
   leds_init();
 
-  timer_start(&timer_get_temp);
-
   while (1) {
+    _delay_ms(1);
 
-    if (timer_fire(&timer_get_temp, 1000, 0, 0, false)) {
-      temp ^= 1;
+#if 0
+    static Timer32 timer_work_fun;
+    if (timer_fire(&timer_work_fun, 0, settings.p.fan_work_duration * 1000,
+                   1 * 1000 * 60, true)) {
+      temp = 1;
+    } else {
+      temp = 0;
     }
+
     continue;
+#endif
 
     // Проверить устройство на линии
     if (!ds18b20_is_live()) {
@@ -832,44 +835,41 @@ leds_init(void)
   PIN_STATE_HIGH(PORTC, PIN_LED_STOP);
 }
 
-void
-timer_start(Timer32 *timer)
-{
-  timer->enable    = true;
-  timer->time_wait = time;
-}
-
-void
-timer_callback(Timer32 *timer, void (*func_ptr)(void), u32 time_callback,
-               b8 loop)
-{
-  if (timer->enable && time - timer->time_wait >= time_callback) {
-    func_ptr();
-    timer_start(timer);
-    timer->enable = loop;
-  }
-}
-
 b8
-timer_fire(Timer32 *timer, u32 time_wait, u32 time_work, u32 time_pause,
+timer_fire(Timer32 *timer, u32 time_wait, u32 time_work, u32 time_sleep,
            b8 loop)
 {
   b8 res = false;
 
-  if ((timer->time_wait && time - timer->time_wait >= time_wait)
-      || !time_wait) {
-    timer->time_work = time;
-    timer->time_wait = 0;
-    res              = true;
+  if (timer->is_fire_done && time_sleep
+      && time - timer->time_sleep <= time_sleep) {
+    return false;
+  } else {
+    timer->is_fire_done = false;
   }
 
-  // if ((timer->time_work && time - timer->time_work <= time_work)
-  //     || (timer->time_work && !time_work)) {
-  //   timer->time_work = 0;
-  //   res              = true;
-  // }
+  if (!timer->time_wait) {
+    timer->time_wait = time;
+  }
 
-  return true;
+  if (time - timer->time_wait >= time_wait) {
+    if (!timer->time_work) {
+      timer->time_work = time;
+    }
+
+    if (time - timer->time_work <= time_work) {
+      timer->time_sleep = time;
+      res               = true;
+    } else {
+      if (loop) {
+        timer->time_wait    = 0;
+        timer->time_work    = 0;
+        timer->is_fire_done = true;
+      }
+    }
+  }
+
+  return res;
 }
 
 ISR(TIMER1_COMPA_vect)
