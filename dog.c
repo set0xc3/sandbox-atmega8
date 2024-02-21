@@ -869,7 +869,7 @@ timer_fire(Timer32 *timer, u32 time_wait, u32 time_work, u32 time_pause,
   //   res              = true;
   // }
 
-  return tue;
+  return true;
 }
 
 ISR(TIMER1_COMPA_vect)
