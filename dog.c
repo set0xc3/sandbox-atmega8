@@ -179,7 +179,7 @@ static volatile u8 target_temp;
 static volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag;
 // static u32 temp_point; // Переменная для дробного значения температуры
 
-static b8 ds18b20_is_temp_wait = false;
+static b8 ds18b20_is_temp_read_done = true;
 
 // Прототипы функций
 static void init_io(void);
@@ -242,6 +242,7 @@ typedef struct Timer32 {
 static Timer32 timer_work_fun;
 static Timer32 timer_controller_shutdown_temperature;
 static Timer32 timer_menu;
+static Timer32 timer_alarm;
 
 static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
                        u32 time_sleep, b8 loop);
@@ -263,8 +264,9 @@ main(void)
     if (ds18b20_is_live()) {
       get_temp();
 
-      if (temp != 0) {
+      handle_buttons();
 
+      if (temp > 0 || temp == 0) {
         // Срабатывание защиты!
         if (temp >= 90) {
           mode = MODE_STOP;
@@ -294,8 +296,6 @@ main(void)
         } else {
           timer_reset(&timer_controller_shutdown_temperature);
         }
-
-        handle_buttons();
 
         if (state != STATE_ALARM) {
           if (menu_timer_enable) {
@@ -359,12 +359,23 @@ main(void)
         } else if (state == STATE_ALARM || last_state == STATE_ALARM) {
           display_enable = 1;
         }
+      }
 
-      } else if (!ds18b20_is_temp_wait && temp == 0) {
-        change_state(STATE_ALARM);
-        leds_off();
-        leds_change(Leds_Stop, true);
-        leds_change(Leds_Alarm, true);
+      if (ds18b20_is_temp_read_done) {
+        if (temp == 0) {
+          if (mode != MODE_STOP) {
+            if (timer_fire(&timer_alarm, 2000, 0, 0, true)) {
+              change_state(STATE_ALARM);
+              leds_off();
+              leds_change(Leds_Stop, true);
+              leds_change(Leds_Alarm, true);
+            }
+          } else {
+            timer_reset(&timer_alarm);
+          }
+        } else {
+          timer_reset(&timer_alarm);
+        }
       }
     } else {
       temp = 0;
@@ -424,16 +435,14 @@ get_temp(void)
 {
   static Timer32 timer_get_temp;
 
-  if (!ds18b20_is_temp_wait) {
-    ds18b20_is_temp_wait = true;
+  if (ds18b20_is_temp_read_done) {
+    ds18b20_is_temp_read_done = false;
     ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0x44); // Запуск температурного преобразования
   }
 
   if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
-    ds18b20_is_temp_wait = false;
-
     ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0xBE); // Считываем содержимое ОЗУ
@@ -448,6 +457,8 @@ get_temp(void)
     // temp = (Temp_LSB & 0x0F);
     // temp_point = temp * 625 / 1000; // Точность
     // темпер.преобразования(0.0625)
+
+    ds18b20_is_temp_read_done = true;
   }
 }
 
@@ -512,7 +523,9 @@ handle_buttons(void)
         }
         break;
       } else if (last_state == STATE_MENU_TEMP_CHANGE
-                 || last_state == STATE_ALARM) {
+                 || last_state == STATE_ALARM
+                 || last_state == STATE_MENU_PARAMETERS
+                 || last_state == STATE_MENU) {
         last_state = STATE_HOME;
       }
     }
@@ -990,7 +1003,9 @@ ISR(TIMER1_COMPA_vect)
 
       if (menu_seconds >= 5 && state != STATE_HOME) {
         change_state(STATE_HOME);
-        if (last_state == STATE_MENU_TEMP_CHANGE) {
+        if (last_state == STATE_MENU_TEMP_CHANGE
+            || last_state == STATE_MENU_PARAMETERS
+            || last_state == STATE_MENU) {
           last_state = STATE_HOME;
         }
         menu_timer_enable = 0;
