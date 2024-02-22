@@ -174,7 +174,7 @@ volatile u8 last_buttons[BUTTON_COUNT];
 
 volatile u32 prev_time, time = 0;
 
-static volatile u8 temp;
+static volatile u8 last_temp, temp;
 static volatile u8 target_temp;
 static volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag;
 // static u32 temp_point; // Переменная для дробного значения температуры
@@ -184,7 +184,7 @@ static b8 ds18b20_is_temp_read_done = true;
 // Прототипы функций
 static void init_io(void);
 static void init_timers(void);
-static void get_temp(void);
+static b8   get_temp(void);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
 
@@ -242,7 +242,8 @@ typedef struct Timer32 {
 static Timer32 timer_work_fun;
 static Timer32 timer_controller_shutdown_temperature;
 static Timer32 timer_menu;
-static Timer32 timer_alarm;
+static Timer32 timer_get_temp;
+static Timer32 timer_is_live;
 
 static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
                        u32 time_sleep, b8 loop);
@@ -257,132 +258,137 @@ main(void)
   init_timers();
   leds_init();
 
+  // Проверить устройство на линии
+  if (!ds18b20_is_live()) {
+    change_state(STATE_ALARM);
+    leds_off();
+    leds_change(Leds_Stop, true);
+    leds_change(Leds_Alarm, true);
+  }
+
   while (1) {
     _delay_ms(1);
 
-    // Проверить устройство на линии
-    if (ds18b20_is_live()) {
-      get_temp();
+    handle_buttons();
 
-      handle_buttons();
-
-      if (temp > 0 || temp == 0) {
-        // Срабатывание защиты!
-        if (temp >= 90) {
-          mode = MODE_STOP;
+    if (state != STATE_ALARM) {
+      if (!ds18b20_is_live()) {
+        if (timer_fire(&timer_is_live, 1000, 0, 0, true)) {
+          temp = 0;
           change_state(STATE_ALARM);
           leds_off();
           leds_change(Leds_Stop, true);
           leds_change(Leds_Alarm, true);
         }
+      } else {
+        timer_reset(&timer_is_live);
 
-        // Срабатывание защиты!
-        if (temp < settings.p.controller_shutdown_temperature) {
-          static u32 fires = 0;
+        get_temp();
 
-          if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0, 0,
-                         true)) {
-            fires += 1;
-          }
+        if (ds18b20_is_temp_read_done) {
+          if (temp == 0) {
+            if (mode != MODE_STOP) {
+              if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
+                change_state(STATE_ALARM);
+                leds_off();
+                leds_change(Leds_Stop, true);
+                leds_change(Leds_Alarm, true);
+              }
 
-          if (fires == 5) {
-            fires = 0;
-            mode  = MODE_STOP;
+              if (temp < settings.p.controller_shutdown_temperature) {
+                static u32 fires = 0;
+
+                if (timer_fire(&timer_controller_shutdown_temperature, 60000,
+                               0, 0, true)) {
+                  fires += 1;
+                }
+
+                if (fires == 5) {
+                  fires = 0;
+                  mode  = MODE_STOP;
+                  change_state(STATE_ALARM);
+                  leds_off();
+                  leds_change(Leds_Stop, true);
+                  leds_change(Leds_Alarm, true);
+                }
+              } else {
+                timer_reset(&timer_controller_shutdown_temperature);
+              }
+            } else {
+              timer_reset(&timer_get_temp);
+              timer_reset(&timer_controller_shutdown_temperature);
+            }
+          } else if (temp >= 90) {
+            mode = MODE_STOP;
             change_state(STATE_ALARM);
             leds_off();
             leds_change(Leds_Stop, true);
             leds_change(Leds_Alarm, true);
+          } else if (time > 0) {
+            timer_reset(&timer_get_temp);
           }
-        } else {
-          timer_reset(&timer_controller_shutdown_temperature);
-        }
-
-        if (state != STATE_ALARM) {
-          if (menu_timer_enable) {
-            if (state == STATE_MENU_TEMP_CHANGE) {
-              if (timer_fire(&timer_menu, 0, 0, 250, true)) {
-                display_enable ^= 1;
-              }
-            }
-          } else {
-            display_enable = 1;
-          }
-
-          if (state == STATE_HOME) {
-            if (settings.p.factory_settings == 1) {
-              settings_reset();
-            }
-          }
-
-          if (mode == MODE_STOP) {
-            leds_off();
-            leds_change(Leds_Stop, true);
-          } else if (mode == MODE_RASTOPKA || mode == MODE_CONTROL) {
-            leds_change(Leds_Stop, false);
-
-            if (temp < 35) {
-              // Вентилятор начнет работу в ручном режиме.
-              mode = MODE_RASTOPKA;
-              leds_change(Leds_Control, false);
-              leds_change(Leds_Rastopka, true);
-              leds_change(Leds_Fan, true);
-            } else {
-              // Вентилятор начнет работу в автоматическом режиме.
-              if (temp >= target_temp + settings.p.hysteresis) {
-                mode = MODE_CONTROL;
-                leds_change(Leds_Fan, false);
-                leds_change(Leds_Control, true);
-                leds_change(Leds_Rastopka, false);
-
-                timer_reset(&timer_work_fun);
-              } else if (temp <= target_temp - settings.p.hysteresis) {
-                mode = MODE_RASTOPKA;
-                leds_change(Leds_Rastopka, true);
-                leds_change(Leds_Control, false);
-              }
-
-              if (mode == MODE_RASTOPKA) {
-                if (timer_fire(&timer_work_fun, 0, 1000, 1000, true)) {
-                  leds_change(Leds_Fan, true);
-                } else {
-                  leds_change(Leds_Fan, false);
-                }
-              }
-            }
-
-            if (temp >= settings.p.pump_connection_temperature) {
-              leds_change(Leds_Pump, true);
-            } else {
-              leds_change(Leds_Pump, false);
-            }
-          }
-        } else if (state == STATE_ALARM || last_state == STATE_ALARM) {
-          display_enable = 1;
         }
       }
 
-      if (ds18b20_is_temp_read_done) {
-        if (temp == 0) {
-          if (mode != MODE_STOP) {
-            if (timer_fire(&timer_alarm, 2000, 0, 0, true)) {
-              change_state(STATE_ALARM);
-              leds_off();
-              leds_change(Leds_Stop, true);
-              leds_change(Leds_Alarm, true);
-            }
-          } else {
-            timer_reset(&timer_alarm);
-          }
+      if (state == STATE_HOME) {
+        if (settings.p.factory_settings == 1) {
+          settings_reset();
+        }
+      }
+
+      if (mode == MODE_STOP) {
+        leds_off();
+        leds_change(Leds_Stop, true);
+      } else if (mode == MODE_RASTOPKA || mode == MODE_CONTROL) {
+        leds_change(Leds_Stop, false);
+
+        if (temp < 35) {
+          // Вентилятор начнет работу в ручном режиме.
+          mode = MODE_RASTOPKA;
+          leds_change(Leds_Control, false);
+          leds_change(Leds_Rastopka, true);
+          leds_change(Leds_Fan, true);
         } else {
-          timer_reset(&timer_alarm);
+          // Вентилятор начнет работу в автоматическом режиме.
+          if (temp >= target_temp + settings.p.hysteresis) {
+            mode = MODE_CONTROL;
+            leds_change(Leds_Fan, false);
+            leds_change(Leds_Control, true);
+            leds_change(Leds_Rastopka, false);
+
+            timer_reset(&timer_work_fun);
+          } else if (temp <= target_temp - settings.p.hysteresis) {
+            mode = MODE_RASTOPKA;
+            leds_change(Leds_Rastopka, true);
+            leds_change(Leds_Control, false);
+          }
+
+          if (mode == MODE_RASTOPKA) {
+            if (timer_fire(&timer_work_fun, 0, 1000, 1000, true)) {
+              leds_change(Leds_Fan, true);
+            } else {
+              leds_change(Leds_Fan, false);
+            }
+          }
+        }
+
+        if (temp >= settings.p.pump_connection_temperature) {
+          leds_change(Leds_Pump, true);
+        } else {
+          leds_change(Leds_Pump, false);
         }
       }
     } else {
-      temp = 0;
-      change_state(STATE_ALARM);
-      leds_off();
-      leds_change(Leds_Stop, true);
-      leds_change(Leds_Alarm, true);
+      if (menu_timer_enable) {
+        if (state == STATE_MENU_TEMP_CHANGE) {
+          if (timer_fire(&timer_menu, 0, 0, 250, true)) {
+            display_enable ^= 1;
+          }
+        }
+      }
+
+      timer_reset(&timer_menu);
+      display_enable = 1;
     }
 
     leds_display(Leds_Stop);
@@ -430,20 +436,22 @@ init_timers(void)
   ENABLE_INTERRUPTS();
 }
 
-void
+b8
 get_temp(void)
 {
   static Timer32 timer_get_temp;
 
+  b8 res = false;
+
   if (ds18b20_is_temp_read_done) {
     ds18b20_is_temp_read_done = false;
-    ds18b20_reset();
+    res                       = ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0x44); // Запуск температурного преобразования
   }
 
-  if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
-    ds18b20_reset();
+  if (timer_fire(&timer_get_temp, 750, 0, 0, true)) {
+    res = ds18b20_reset();
     ds18b20_write(0xCC); // Проверка кода датчика
     ds18b20_write(0xBE); // Считываем содержимое ОЗУ
 
@@ -451,7 +459,12 @@ get_temp(void)
     Temp_MSB = ds18b20_read();
 
     // Вычисляем целое значение температуры
+    if (temp) {
+      last_temp = temp;
+    }
+
     temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
+
     // temp ^= 1;
 
     // temp = (Temp_LSB & 0x0F);
@@ -460,6 +473,8 @@ get_temp(void)
 
     ds18b20_is_temp_read_done = true;
   }
+
+  return res;
 }
 
 void
@@ -890,8 +905,6 @@ ds18b20_is_live(void)
     ok = !(PIN_OW_READ & (1 << PIN_OW));
 
     _delay_us(53);
-  } else {
-    ok = false;
   }
 
   ENABLE_INTERRUPTS();
@@ -1021,9 +1034,22 @@ ISR(TIMER2_COMP_vect)
 {
   switch (state) {
   case STATE_HOME:
+    if (temp) {
+      display_menu(display_segment_numbers[temp % 100 / 10],
+                   display_segment_numbers[temp % 10]);
+    } else {
+      display_menu(display_segment_numbers[last_temp % 100 / 10],
+                   display_segment_numbers[last_temp % 10]);
+    }
+
+    break;
   case STATE_ALARM:
-    display_menu(display_segment_numbers[temp % 100 / 10],
-                 display_segment_numbers[temp % 10]);
+    if (temp >= 90) {
+      display_menu(display_segment_numbers[temp % 100 / 10],
+                   display_segment_numbers[temp % 10]);
+    } else if (temp < 90) {
+      display_menu(display_segment_numbers[10], display_segment_numbers[10]);
+    }
     break;
   case STATE_MENU_TEMP_CHANGE:
     display_menu(display_segment_numbers[target_temp % 100 / 10],
