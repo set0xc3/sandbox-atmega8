@@ -213,7 +213,24 @@ static u8   ds18b20_read(void);
 static void ds18b20_write(u8 data);
 static b8   ds18b20_is_live(void);
 
-void leds_init(void);
+#define LEDS_MAX 6
+
+typedef enum Leds {
+  Leds_Stop     = PIN_LED_STOP,
+  Leds_Rastopka = PIN_LED_RASTOPKA,
+  Leds_Control  = PIN_LED_CONTROL,
+  Leds_Alarm    = PIN_LED_ALARM,
+  Leds_Pump     = PIN_LED_PUMP,
+  Leds_Fan      = PIN_LED_FAN
+} Leds;
+
+static b8 leds_list[LEDS_MAX];
+
+static void leds_init(void);
+static void leds_display(Leds led);
+static void leds_change(Leds led, b8 enable);
+static void leds_off(void);
+static b8   leds_is_enable(Leds led);
 
 typedef struct Timer32 {
   b8  is_fire_done;
@@ -222,10 +239,13 @@ typedef struct Timer32 {
   u32 time_sleep;
 } Timer32;
 
-static b8 timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
-                     u32 time_sleep, b8 loop);
+static Timer32 timer_work_fun;
+static Timer32 timer_controller_shutdown_temperature;
+static Timer32 timer_menu;
 
-static Timer32 timer_get_temp;
+static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
+                       u32 time_sleep, b8 loop);
+static void timer_reset(Timer32 *timer);
 
 int
 main(void)
@@ -239,118 +259,127 @@ main(void)
   while (1) {
     _delay_ms(1);
 
-#if 0
-    static Timer32 timer_work_fun;
-    if (timer_fire(&timer_work_fun, 0, settings.p.fan_work_duration * 1000,
-                   1 * 1000 * 60, true)) {
-      temp = 1;
+    // Проверить устройство на линии
+    if (ds18b20_is_live()) {
+      get_temp();
+
+      if (temp != 0) {
+
+        // Срабатывание защиты!
+        if (temp >= 90) {
+          mode = MODE_STOP;
+          change_state(STATE_ALARM);
+          leds_off();
+          leds_change(Leds_Stop, true);
+          leds_change(Leds_Alarm, true);
+        }
+
+        // Срабатывание защиты!
+        if (temp < settings.p.controller_shutdown_temperature) {
+          static u32 fires = 0;
+
+          if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0, 0,
+                         true)) {
+            fires += 1;
+          }
+
+          if (fires == 5) {
+            fires = 0;
+            mode  = MODE_STOP;
+            change_state(STATE_ALARM);
+            leds_off();
+            leds_change(Leds_Stop, true);
+            leds_change(Leds_Alarm, true);
+          }
+        } else {
+          timer_reset(&timer_controller_shutdown_temperature);
+        }
+
+        handle_buttons();
+
+        if (state != STATE_ALARM) {
+          if (menu_timer_enable) {
+            if (state == STATE_MENU_TEMP_CHANGE) {
+              if (timer_fire(&timer_menu, 0, 0, 250, true)) {
+                display_enable ^= 1;
+              }
+            }
+          } else {
+            display_enable = 1;
+          }
+
+          if (state == STATE_HOME) {
+            if (settings.p.factory_settings == 1) {
+              settings_reset();
+            }
+          }
+
+          if (mode == MODE_STOP) {
+            leds_off();
+            leds_change(Leds_Stop, true);
+          } else if (mode == MODE_RASTOPKA || mode == MODE_CONTROL) {
+            leds_change(Leds_Stop, false);
+
+            if (temp < 35) {
+              // Вентилятор начнет работу в ручном режиме.
+              mode = MODE_RASTOPKA;
+              leds_change(Leds_Control, false);
+              leds_change(Leds_Rastopka, true);
+              leds_change(Leds_Fan, true);
+            } else {
+              // Вентилятор начнет работу в автоматическом режиме.
+              if (temp >= target_temp + settings.p.hysteresis) {
+                mode = MODE_CONTROL;
+                leds_change(Leds_Fan, false);
+                leds_change(Leds_Control, true);
+                leds_change(Leds_Rastopka, false);
+
+                timer_reset(&timer_work_fun);
+              } else if (temp <= target_temp - settings.p.hysteresis) {
+                mode = MODE_RASTOPKA;
+                leds_change(Leds_Rastopka, true);
+                leds_change(Leds_Control, false);
+              }
+
+              if (mode == MODE_RASTOPKA) {
+                if (timer_fire(&timer_work_fun, 0, 1000, 1000, true)) {
+                  leds_change(Leds_Fan, true);
+                } else {
+                  leds_change(Leds_Fan, false);
+                }
+              }
+            }
+
+            if (temp >= settings.p.pump_connection_temperature) {
+              leds_change(Leds_Pump, true);
+            } else {
+              leds_change(Leds_Pump, false);
+            }
+          }
+        } else if (state == STATE_ALARM || last_state == STATE_ALARM) {
+          display_enable = 1;
+        }
+
+      } else if (!ds18b20_is_temp_wait && temp == 0) {
+        change_state(STATE_ALARM);
+        leds_off();
+        leds_change(Leds_Stop, true);
+        leds_change(Leds_Alarm, true);
+      }
     } else {
       temp = 0;
-    }
-
-    continue;
-#endif
-
-    // Проверить устройство на линии
-    if (!ds18b20_is_live()) {
-      temp = 0;
-      ENABLE_INTERRUPTS();
       change_state(STATE_ALARM);
-      PIN_LED_PORT = 0;
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
-      continue;
+      leds_off();
+      leds_change(Leds_Stop, true);
+      leds_change(Leds_Alarm, true);
     }
 
-    get_temp();
-    if (!ds18b20_is_temp_wait && temp == 0) {
-      change_state(STATE_ALARM);
-      PIN_LED_PORT = 0;
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
-      continue;
-    }
-
-    // Срабатывание защиты!
-    if (temp >= 90) {
-      change_state(STATE_ALARM);
-      PIN_LED_PORT = 0;
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
-    } else if (state == STATE_ALARM) {
-      change_state(STATE_HOME);
-      PIN_LED_PORT = 0;
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
-    }
-
-    if (state != STATE_ALARM) {
-      handle_buttons();
-
-      if (state == STATE_HOME) {
-        if (settings.p.factory_settings == 1) {
-          settings_reset();
-        }
-      }
-
-      // Срабатывание защиты!
-      // if (temp < settings.p.controller_shutdown_temperature) {
-      //   change_state(STATE_ALARM);
-      //   PIN_LED_PORT = 0;
-      //   PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
-      //   PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_ALARM);
-      // }
-
-      switch (mode) {
-      case MODE_STOP:
-        PIN_LED_PORT = 0;
-        PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
-        break;
-      case MODE_RASTOPKA:
-        PIN_LED_PORT = 0;
-
-        if (temp >= 35) {
-          mode = MODE_CONTROL;
-          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_CONTROL);
-        } else {
-          mode = MODE_RASTOPKA;
-          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_RASTOPKA);
-        }
-        break;
-      case MODE_CONTROL:
-        PIN_LED_PORT = 0;
-
-        if (temp < 35) {
-          mode = MODE_RASTOPKA;
-          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_RASTOPKA);
-        } else {
-          mode = MODE_CONTROL;
-          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_CONTROL);
-
-          if (temp < target_temp - settings.p.hysteresis) {
-            PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_FAN);
-          } else if (temp > target_temp + settings.p.hysteresis) {
-            PIN_STATE_LOW(PIN_LED_PORT, PIN_LED_FAN);
-          }
-        }
-
-        if (temp >= settings.p.pump_connection_temperature) {
-          PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_PUMP);
-        } else {
-          PIN_STATE_LOW(PIN_LED_PORT, PIN_LED_PUMP);
-        }
-        break;
-      }
-    }
-
-    // if (temp > (20 + settings.p.hysteresis)) {
-    //   DDRD = 0;
-    //   PORTD = 0;
-    //   DDRB = 0;
-    // } else if (temp < (20 - settings.p.hysteresis)) {
-    //   DDRD |= (1 << PD0) | (1 << PD1);
-    //   PORTD = (1 << display_idx);
-    //   DDRB = 0xFF;
-    // }
+    leds_display(Leds_Stop);
+    leds_display(Leds_Rastopka);
+    leds_display(Leds_Control);
+    leds_display(Leds_Alarm);
+    leds_display(Leds_Pump);
+    leds_display(Leds_Fan);
   }
 
   return 0;
@@ -393,6 +422,8 @@ init_timers(void)
 void
 get_temp(void)
 {
+  static Timer32 timer_get_temp;
+
   if (!ds18b20_is_temp_wait) {
     ds18b20_is_temp_wait = true;
     ds18b20_reset();
@@ -463,34 +494,44 @@ handle_buttons(void)
   case STATE_HOME: {
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
-
-      if (last_state != STATE_MENU_PARAMETERS) {
-        if (mode == MODE_STOP) {
-          mode = MODE_RASTOPKA;
-        } else {
-          mode = MODE_STOP;
-        }
-      }
     } else if (button_released(BUTTON_MENU)) {
       if (state != STATE_MENU) {
         menu_timer_enable = 0;
         menu_seconds      = 0;
       }
+
+      if (last_state == STATE_HOME || last_state == STATE_ALARM) {
+        if (mode == MODE_STOP) {
+          mode = MODE_RASTOPKA;
+          leds_off();
+          leds_change(Leds_Rastopka, true);
+        } else if (mode != MODE_STOP) {
+          mode = MODE_STOP;
+          leds_off();
+          leds_change(Leds_Stop, true);
+        }
+        break;
+      } else if (last_state == STATE_MENU_TEMP_CHANGE
+                 || last_state == STATE_ALARM) {
+        last_state = STATE_HOME;
+      }
     }
 
     if (button_pressed(BUTTON_UP)) {
-      menu_seconds      = 0;
-      start_time        = time;
-      target_temp       = target_temp < 80 ? target_temp + 1 : 80;
-      state             = STATE_MENU_TEMP_CHANGE;
+      menu_seconds = 0;
+      start_time   = time;
+      target_temp  = target_temp < 80 ? target_temp + 1 : 80;
+      change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
+      break;
     }
     if (button_pressed(BUTTON_DOWN)) {
-      menu_seconds      = 0;
-      start_time        = time;
-      target_temp       = target_temp > 35 ? target_temp - 1 : 35;
-      state             = STATE_MENU_TEMP_CHANGE;
+      menu_seconds = 0;
+      start_time   = time;
+      target_temp  = target_temp > 35 ? target_temp - 1 : 35;
+      change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
+      break;
     }
   } break;
 
@@ -498,22 +539,25 @@ handle_buttons(void)
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 0;
       menu_seconds      = 0;
-      state             = STATE_HOME;
+      change_state(STATE_HOME);
+      break;
     }
 
     if (button_pressed(BUTTON_UP)) {
-      menu_seconds      = 0;
-      start_time        = time;
-      target_temp       = target_temp < 80 ? target_temp + 1 : 80;
-      state             = STATE_MENU_TEMP_CHANGE;
+      menu_seconds = 0;
+      start_time   = time;
+      target_temp  = target_temp < 80 ? target_temp + 1 : 80;
+      change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
+      break;
     }
     if (button_pressed(BUTTON_DOWN)) {
-      menu_seconds      = 0;
-      start_time        = time;
-      target_temp       = target_temp > 35 ? target_temp - 1 : 35;
-      state             = STATE_MENU_TEMP_CHANGE;
+      menu_seconds = 0;
+      start_time   = time;
+      target_temp  = target_temp > 35 ? target_temp - 1 : 35;
+      change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
+      break;
     }
 
     if (button_down(BUTTON_UP)) {
@@ -523,6 +567,7 @@ handle_buttons(void)
         target_temp = target_temp < 80 ? target_temp + 1 : 80;
         _delay_ms(10);
       }
+      break;
     }
     if (button_down(BUTTON_DOWN)) {
       menu_seconds       = 0;
@@ -531,13 +576,14 @@ handle_buttons(void)
         target_temp = target_temp > 35 ? target_temp - 1 : 35;
         _delay_ms(10);
       }
+      break;
     }
   } break;
 
   case STATE_MENU: {
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
-      state        = STATE_MENU_PARAMETERS;
+      change_state(STATE_MENU_PARAMETERS);
       break;
     }
 
@@ -547,6 +593,7 @@ handle_buttons(void)
         menu_seconds = 0;
         start_time   = time;
         menu_idx     = menu_idx < 9 ? menu_idx + 1 : 9;
+        break;
       }
 
       if (button_down(BUTTON_UP)) {
@@ -556,6 +603,7 @@ handle_buttons(void)
           menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
           _delay_ms(50);
         }
+        break;
       }
     }
 
@@ -565,6 +613,7 @@ handle_buttons(void)
         menu_seconds = 0;
         start_time   = time;
         menu_idx     = menu_idx > 0 ? menu_idx - 1 : 0;
+        break;
       }
 
       if (button_down(BUTTON_DOWN)) {
@@ -574,6 +623,7 @@ handle_buttons(void)
           menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
           _delay_ms(50);
         }
+        break;
       }
     }
   } break;
@@ -581,7 +631,7 @@ handle_buttons(void)
   case STATE_MENU_PARAMETERS: {
     if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
-      state        = STATE_MENU;
+      change_state(STATE_MENU);
       break;
     }
 
@@ -591,7 +641,9 @@ handle_buttons(void)
         menu_seconds = 0;
         start_time   = time;
         settings_change_params(1);
+        break;
       }
+
       if (button_down(BUTTON_UP)) {
         menu_seconds       = 0;
         u32 press_duration = time - start_time;
@@ -599,6 +651,7 @@ handle_buttons(void)
           settings_change_params(1);
           _delay_ms(10);
         }
+        break;
       }
     }
 
@@ -608,7 +661,9 @@ handle_buttons(void)
         menu_seconds = 0;
         start_time   = time;
         settings_change_params(-1);
+        break;
       }
+
       if (button_down(BUTTON_DOWN)) {
         menu_seconds       = 0;
         u32 press_duration = time - start_time;
@@ -616,19 +671,22 @@ handle_buttons(void)
           settings_change_params(-1);
           _delay_ms(10);
         }
+        break;
       }
     }
   } break;
 
   case STATE_ALARM: {
-    if (button_pressed(BUTTON_MENU)) {
-      state        = STATE_HOME;
-      PIN_LED_PORT = 0;
-      PIN_STATE_HIGH(PIN_LED_PORT, PIN_LED_STOP);
+    if (button_released(BUTTON_MENU)) {
+      mode = MODE_STOP;
+      change_state(STATE_HOME);
+      leds_off();
+      leds_change(Leds_Stop, true);
+      timer_reset(&timer_controller_shutdown_temperature);
+      menu_timer_enable = 0;
+      menu_seconds      = 0;
+      display_enable    = 1;
     }
-    break;
-
-  default:
     break;
   }
   }
@@ -647,7 +705,7 @@ settings_reset(void)
   settings.p.controller_shutdown_temperature = 30; // 25-50
   settings.p.sound_signal_enabled            = 1;  // 0-1
   settings.p.factory_settings                = 0;  // 0-1
-  target_temp                                = 59;
+  target_temp                                = 60;
 }
 
 void
@@ -831,8 +889,41 @@ ds18b20_is_live(void)
 void
 leds_init(void)
 {
-  PORTC = 0;
-  PIN_STATE_HIGH(PORTC, PIN_LED_STOP);
+  leds_off();
+  leds_change(Leds_Stop, true);
+}
+
+void
+leds_display(Leds led)
+{
+  if (leds_list[led]) {
+    PIN_STATE_HIGH(PIN_LED_PORT, led);
+  } else {
+    PIN_STATE_LOW(PIN_LED_PORT, led);
+  }
+}
+
+void
+leds_off(void)
+{
+  leds_list[Leds_Stop]     = false;
+  leds_list[Leds_Rastopka] = false;
+  leds_list[Leds_Control]  = false;
+  leds_list[Leds_Alarm]    = false;
+  leds_list[Leds_Pump]     = false;
+  leds_list[Leds_Fan]      = false;
+}
+
+void
+leds_change(Leds led, b8 enable)
+{
+  leds_list[led] = enable;
+}
+
+b8
+leds_is_enable(Leds led)
+{
+  return leds_list[led];
 }
 
 b8
@@ -872,6 +963,12 @@ timer_fire(Timer32 *timer, u32 time_wait, u32 time_work, u32 time_sleep,
   return res;
 }
 
+static void
+timer_reset(Timer32 *timer)
+{
+  memset(timer, 0, sizeof(Timer32));
+}
+
 ISR(TIMER1_COMPA_vect)
 {
   static u32 start_time = 0;
@@ -881,31 +978,27 @@ ISR(TIMER1_COMPA_vect)
   time += 1;
   start_time += 1;
 
-  if (state == STATE_MENU_TEMP_CHANGE) {
-    if (start_time >= 250) {
-      display_enable ^= 1;
-      start_time = 0;
-    }
-  } else {
-    display_enable = 1;
-  }
+  if (state != STATE_ALARM) {
+    if (menu_timer_enable) {
+      if (time / 1000 > prev_time / 1000) {
+        menu_seconds += 1;
+      }
 
-  if (menu_timer_enable) {
-    if (time / 1000 > prev_time / 1000) {
-      menu_seconds += 1;
-    }
+      if (menu_seconds >= 2 && state == STATE_HOME) {
+        change_state(STATE_MENU);
+      }
 
-    if (menu_seconds >= 2 && state == STATE_HOME) {
-      change_state(STATE_MENU);
+      if (menu_seconds >= 5 && state != STATE_HOME) {
+        change_state(STATE_HOME);
+        if (last_state == STATE_MENU_TEMP_CHANGE) {
+          last_state = STATE_HOME;
+        }
+        menu_timer_enable = 0;
+        menu_seconds      = 0;
+      }
+    } else {
+      menu_seconds = 0;
     }
-
-    if (menu_seconds >= 5 && state != STATE_HOME) {
-      change_state(STATE_HOME);
-      menu_timer_enable = 0;
-      menu_seconds      = 0;
-    }
-  } else {
-    menu_seconds = 0;
   }
 }
 
