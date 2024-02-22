@@ -210,7 +210,9 @@ static u8 button_down(u8 code);
 
 static u8   ds18b20_reset(void);
 static u8   ds18b20_read(void);
+static u8   ds18b20_read_bit(void);
 static void ds18b20_write(u8 data);
+static b8   ds18b20_search_device(void);
 static b8   ds18b20_is_live(void);
 
 #define LEDS_MAX 6
@@ -258,18 +260,45 @@ main(void)
   init_timers();
   leds_init();
 
-  // Проверить устройство на линии
-  if (!ds18b20_is_live()) {
-    change_state(STATE_ALARM);
-    leds_off();
-    leds_change(Leds_Stop, true);
-    leds_change(Leds_Alarm, true);
-  }
+  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+  PIN_STATE_HIGH(PIN_OW_PORT, PIN_OW);
 
   while (1) {
     _delay_ms(1);
 
+    // Проверить устройство на линии
+    if (!ds18b20_reset()) {
+      change_state(STATE_ALARM);
+      leds_off();
+      leds_change(Leds_Stop, true);
+      leds_change(Leds_Alarm, true);
+    } else {
+      ds18b20_write(0xF0);
+
+      // read a bit and its complement
+      u8 id_bit     = ds18b20_read_bit();
+      u8 cmp_id_bit = ds18b20_read_bit();
+
+      // check for no devices on 1-wire
+      if ((id_bit == 1) && (cmp_id_bit == 1)) {
+        change_state(STATE_ALARM);
+        leds_off();
+        leds_change(Leds_Stop, true);
+        leds_change(Leds_Alarm, true);
+      }
+    }
+
     handle_buttons();
+
+    continue;
+
+    if (menu_timer_enable) {
+      if (state == STATE_MENU_TEMP_CHANGE) {
+        if (timer_fire(&timer_menu, 0, 0, 250, true)) {
+          display_enable ^= 1;
+        }
+      }
+    }
 
     if (state != STATE_ALARM) {
       if (!ds18b20_is_live()) {
@@ -379,14 +408,6 @@ main(void)
         }
       }
     } else {
-      if (menu_timer_enable) {
-        if (state == STATE_MENU_TEMP_CHANGE) {
-          if (timer_fire(&timer_menu, 0, 0, 250, true)) {
-            display_enable ^= 1;
-          }
-        }
-      }
-
       timer_reset(&timer_menu);
       display_enable = 1;
     }
@@ -799,25 +820,32 @@ u8
 ds18b20_reset(void)
 {
   DISABLE_INTERRUPTS();
-
-  PIN_OW_PORT &= ~(1 << PIN_OW); // Устанавливаем низкий уровень
-  PIN_OW_DDR |= (1 << PIN_OW); // выход
-
-  _delay_us(480);
-
-  PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-
-  _delay_us(60);
-
-  // если OK_Flag = 0 датчик подключен, OK_Flag = 1 датчик не подключен
-  OK_Flag
-      = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
-
+  PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
+  PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
   ENABLE_INTERRUPTS();
 
-  _delay_us(410);
+  _delay_us(640);
 
-  return OK_Flag;
+  DISABLE_INTERRUPTS();
+  PIN_STATE_HIGH(PIN_OW_PORT, PIN_OW);
+  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+
+  // Время необходимое подтягивающему резистору, чтобы вернуть высокий уровень
+  // на шине
+  _delay_us(2);
+
+  // Ждём не менее 60 мс до появления импульса присутствия;
+  for (u8 c = 80; c; c--) {
+    if (!(PIN_OW_READ & (1 << PIN_OW))) {
+      // Если обнаружен импульс присутствия, ждём его окончания
+      while (!(PIN_OW_READ & (1 << PIN_OW))) {
+      } // Ждём конца сигнала присутствия
+      return 1;
+    }
+    _delay_us(1);
+  }
+
+  return 0;
 }
 
 // Функция чтения байта из DS18B20
@@ -847,6 +875,24 @@ ds18b20_read(void)
 
     _delay_us(60);
   }
+  return res;
+}
+
+u8
+ds18b20_read_bit(void)
+{
+  u8 res = 0;
+
+  DISABLE_INTERRUPTS();
+  PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
+  PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
+  _delay_us(3);
+  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW); // let pin float, pull up will raise
+  _delay_us(10);
+  res = PIN_OW_READ & (1 << PIN_OW);
+  ENABLE_INTERRUPTS();
+  _delay_us(53);
+
   return res;
 }
 
@@ -882,6 +928,37 @@ ds18b20_write(u8 data)
 }
 
 b8
+ds18b20_search_device(void)
+{
+  b8 res = false;
+
+  res = ds18b20_reset();
+
+  if (res) {
+    ds18b20_write(0xF0); // Отправляем команду поиска устройства
+
+    DISABLE_INTERRUPTS();
+
+    PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
+    PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
+
+    _delay_us(3);
+
+    PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+
+    _delay_us(10);
+
+    res = !(PIN_OW_READ & (1 << PIN_OW));
+
+    ENABLE_INTERRUPTS();
+
+    _delay_us(53);
+  }
+
+  return res;
+}
+
+b8
 ds18b20_is_live(void)
 {
   b8 ok = false;
@@ -890,6 +967,14 @@ ds18b20_is_live(void)
 
   if (ok) {
     ds18b20_write(0xF0); // Отправляем команду поиска устройства
+
+    u8 id_bit     = ds18b20_read_bit();
+    u8 cmp_id_bit = ds18b20_read_bit();
+
+    // check for no devices on 1-wire
+    if ((id_bit == 1) && (cmp_id_bit == 1)) {
+      return false;
+    }
 
     DISABLE_INTERRUPTS();
 
