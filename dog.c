@@ -174,9 +174,8 @@ volatile u8 last_buttons[BUTTON_COUNT];
 
 volatile u32 prev_time, time = 0;
 
-static volatile u8 last_temp, temp;
-static volatile u8 target_temp;
-static volatile u8 Temp_MSB, Temp_LSB, temp_flag;
+volatile u8 last_temp, temp;
+volatile u8 target_temp;
 // static u32 temp_point; // Переменная для дробного значения температуры
 
 static b8 ds18b20_is_temp_read_done = true;
@@ -212,8 +211,10 @@ static u8 button_down(u8 code);
 static u8   ow_reset(void);
 static u8   ow_read(void);
 static u8   ow_read_bit(void);
+static void ow_send_bit(u8 bit);
 static void ow_send(u8 data);
 static b8   ow_skip(void);
+static u8   ow_crc_update(u8 crc, u8 byte);
 
 #define LEDS_MAX 6
 
@@ -232,7 +233,6 @@ static void leds_init(void);
 static void leds_display(Leds led);
 static void leds_change(Leds led, b8 enable);
 static void leds_off(void);
-static b8   leds_is_enable(Leds led);
 
 typedef struct Timer32 {
   b8  is_fire_done;
@@ -267,6 +267,7 @@ main(void)
 
     if (!ow_reset()) {
       if (timer_fire(&timer_ow_alarm, 1000, 0, 0, true)) {
+        temp = 0;
         startup_alarm();
       }
     }
@@ -280,6 +281,12 @@ main(void)
         }
       } else {
         display_enable = 1;
+      }
+
+      if (state == STATE_HOME) {
+        if (settings.p.factory_settings == 1) {
+          settings_reset();
+        }
       }
 
       if (ds18b20_is_temp_read_done) {
@@ -317,13 +324,7 @@ main(void)
         }
       }
 
-      if (state == STATE_HOME) {
-        if (settings.p.factory_settings == 1) {
-          settings_reset();
-        }
-      }
-
-      if (mode == MODE_STOP) {
+      if (mode == MODE_STOP && state != STATE_ALARM) {
         leds_off();
         leds_change(Leds_Stop, true);
       } else if (mode == MODE_RASTOPKA || mode == MODE_CONTROL) {
@@ -433,18 +434,32 @@ get_temp(void)
 
   if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
     if (ow_reset()) {
+      u8 crc = 0;
+      u8 scratchpad[8];
+
       ow_send(0xCC); // Проверка кода датчика
       ow_send(0xBE); // Считываем содержимое ОЗУ
 
-      Temp_LSB = ow_read(); // Читаем первые 2 байта блокнота
-      Temp_MSB = ow_read();
+      crc = 0;
 
-      // Вычисляем целое значение температуры
-      if (temp) {
-        last_temp = temp;
+      for (u8 i = 0; i < 8; i++) {
+        u8 b          = ow_read();
+        scratchpad[i] = b;
+        crc           = ow_crc_update(crc, b);
+      }
+      if (ow_read() == crc) {
+        if (temp) {
+          last_temp = temp;
+        }
+        temp = ((scratchpad[1] << 4) & 0x70) | (scratchpad[0] >> 4);
+      } else {
+        if (temp) {
+          last_temp = temp;
+        }
+        temp = 0;
       }
 
-      temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
+      // temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
 
       // temp ^= 1;
 
@@ -821,82 +836,63 @@ ow_reset(void)
   return res;
 }
 
-// Функция чтения байта из DS18B20
-u8
-ow_read(void)
-{
-  u8 res = 0;
-  u8 i   = 0;
-
-  for (i = 8; i > 0; i -= 1) {
-    DISABLE_INTERRUPTS();
-
-    PIN_OW_DDR |= (1 << PIN_OW); // выход
-
-    _delay_us(2);
-
-    PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-
-    _delay_us(8);
-
-    res = res >> 1; // Следующий бит
-    if (PIN_OW_READ & (1 << PIN_OW)) {
-      res |= 0x80;
-    }
-
-    ENABLE_INTERRUPTS();
-
-    _delay_us(60);
-  }
-  return res;
-}
-
 u8
 ow_read_bit(void)
 {
   u8 res = 0;
 
   DISABLE_INTERRUPTS();
-  PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
-  PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
-  _delay_us(3);
-  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW); // let pin float, pull up will raise
-  _delay_us(10);
+  PIN_OW_DDR |= (1 << PIN_OW); // выход
+  _delay_us(2);
+  PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+  _delay_us(8);
   res = PIN_OW_READ & (1 << PIN_OW);
   ENABLE_INTERRUPTS();
-  _delay_us(53);
+  _delay_us(80);
 
   return res;
 }
 
-// Функция записи байта в DS18B20
-void
-ow_send(u8 data)
+u8
+ow_read(void)
 {
-  u8 i = 0;
+  u8 r = 0;
 
-  for (i = 8; i > 0; i -= 1) {
-    DISABLE_INTERRUPTS();
-
-    PIN_OW_DDR |= (1 << PIN_OW); // выход
-
-    _delay_us(2);
-
-    if (data & 0x01) {
-      PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-    } else {
-      PIN_OW_DDR |= (1 << PIN_OW); // выход
+  for (u8 p = 8; p; p--) {
+    r >>= 1;
+    if (ow_read_bit()) {
+      r |= 0x80;
     }
+  }
 
-    data = data >> 1; // Следующий бит
+  return r;
+}
 
-    _delay_us(60);
+void
+ow_send_bit(u8 bit)
+{
+  DISABLE_INTERRUPTS();
+  PIN_OW_DDR |= (1 << PIN_OW); // выход
 
+  if (bit) {
+    _delay_us(5);
     PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-
     ENABLE_INTERRUPTS();
+    _delay_us(90);
+  } else {
+    _delay_us(90);
+    PIN_OW_DDR &= ~(1 << PIN_OW); // вход
+    ENABLE_INTERRUPTS();
+    _delay_us(5);
+  }
+}
 
-    _delay_us(2);
+void
+ow_send(u8 byte)
+{
+  for (u8 p = 8; p; p--) {
+    ow_send_bit(byte & 1);
+    byte >>= 1;
   }
 }
 
@@ -917,6 +913,18 @@ ow_skip(void)
   } while (!(PIN_OW_READ & (1 << PIN_OW)));
 
   return true;
+}
+
+// Обновляет значение контольной суммы crc применением всех бит байта b.
+// Возвращает обновлённое значение контрольной суммы
+u8
+ow_crc_update(u8 crc, u8 byte)
+{
+  for (u8 p = 8; p; p--) {
+    crc = ((crc ^ byte) & 1) ? (crc >> 1) ^ 0b10001100 : (crc >> 1);
+    byte >>= 1;
+  }
+  return crc;
 }
 
 void
@@ -951,12 +959,6 @@ void
 leds_change(Leds led, b8 enable)
 {
   leds_list[led] = enable;
-}
-
-b8
-leds_is_enable(Leds led)
-{
-  return leds_list[led];
 }
 
 b8
@@ -1038,22 +1040,12 @@ ISR(TIMER2_COMP_vect)
 {
   switch (state) {
   case STATE_HOME:
-    if (temp) {
-      display_menu(display_segment_numbers[temp % 100 / 10],
-                   display_segment_numbers[temp % 10]);
-    } else {
-      display_menu(display_segment_numbers[last_temp % 100 / 10],
-                   display_segment_numbers[last_temp % 10]);
-    }
-
+    display_menu(display_segment_numbers[temp % 100 / 10],
+                 display_segment_numbers[temp % 10]);
     break;
   case STATE_ALARM:
-    if (temp >= 90) {
-      display_menu(display_segment_numbers[temp % 100 / 10],
-                   display_segment_numbers[temp % 10]);
-    } else if (temp < 90) {
-      display_menu(display_segment_numbers[10], display_segment_numbers[10]);
-    }
+    display_menu(display_segment_numbers[temp % 100 / 10],
+                 display_segment_numbers[temp % 10]);
     break;
   case STATE_MENU_TEMP_CHANGE:
     display_menu(display_segment_numbers[target_temp % 100 / 10],
