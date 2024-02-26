@@ -176,7 +176,7 @@ volatile u32 prev_time, time = 0;
 
 static volatile u8 last_temp, temp;
 static volatile u8 target_temp;
-static volatile u8 Temp_MSB, Temp_LSB, OK_Flag, temp_flag;
+static volatile u8 Temp_MSB, Temp_LSB, temp_flag;
 // static u32 temp_point; // Переменная для дробного значения температуры
 
 static b8 ds18b20_is_temp_read_done = true;
@@ -187,6 +187,7 @@ static void init_timers(void);
 static b8   get_temp(void);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
+static void startup_alarm(void);
 
 static inline void
 change_state(u8 new_state)
@@ -208,12 +209,11 @@ static u8 button_pressed(u8 code);
 static u8 button_released(u8 code);
 static u8 button_down(u8 code);
 
-static u8   ds18b20_reset(void);
-static u8   ds18b20_read(void);
-static u8   ds18b20_read_bit(void);
-static void ds18b20_write(u8 data);
-static b8   ds18b20_search_device(void);
-static b8   ds18b20_is_live(void);
+static u8   ow_reset(void);
+static u8   ow_read(void);
+static u8   ow_read_bit(void);
+static void ow_send(u8 data);
+static b8   ow_skip(void);
 
 #define LEDS_MAX 6
 
@@ -245,7 +245,7 @@ static Timer32 timer_work_fun;
 static Timer32 timer_controller_shutdown_temperature;
 static Timer32 timer_menu;
 static Timer32 timer_get_temp;
-static Timer32 timer_is_live;
+static Timer32 timer_ow_alarm;
 
 static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
                        u32 time_sleep, b8 loop);
@@ -260,102 +260,60 @@ main(void)
   init_timers();
   leds_init();
 
-  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
-  PIN_STATE_HIGH(PIN_OW_PORT, PIN_OW);
-
   while (1) {
     _delay_ms(1);
 
-    // Проверить устройство на линии
-    if (!ds18b20_reset()) {
-      change_state(STATE_ALARM);
-      leds_off();
-      leds_change(Leds_Stop, true);
-      leds_change(Leds_Alarm, true);
-    } else {
-      ds18b20_write(0xF0);
+    handle_buttons();
 
-      // read a bit and its complement
-      u8 id_bit     = ds18b20_read_bit();
-      u8 cmp_id_bit = ds18b20_read_bit();
-
-      // check for no devices on 1-wire
-      if ((id_bit == 1) && (cmp_id_bit == 1)) {
-        change_state(STATE_ALARM);
-        leds_off();
-        leds_change(Leds_Stop, true);
-        leds_change(Leds_Alarm, true);
+    if (!ow_reset()) {
+      if (timer_fire(&timer_ow_alarm, 1000, 0, 0, true)) {
+        startup_alarm();
       }
     }
 
-    handle_buttons();
+    get_temp();
 
-    continue;
-
-    if (menu_timer_enable) {
+    if (state != STATE_ALARM) {
       if (state == STATE_MENU_TEMP_CHANGE) {
         if (timer_fire(&timer_menu, 0, 0, 250, true)) {
           display_enable ^= 1;
         }
-      }
-    }
-
-    if (state != STATE_ALARM) {
-      if (!ds18b20_is_live()) {
-        if (timer_fire(&timer_is_live, 1000, 0, 0, true)) {
-          temp = 0;
-          change_state(STATE_ALARM);
-          leds_off();
-          leds_change(Leds_Stop, true);
-          leds_change(Leds_Alarm, true);
-        }
       } else {
-        timer_reset(&timer_is_live);
+        display_enable = 1;
+      }
 
-        get_temp();
+      if (ds18b20_is_temp_read_done) {
+        if (temp == 0) {
+          if (mode != MODE_STOP) {
+            if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
+              startup_alarm();
+            }
 
-        if (ds18b20_is_temp_read_done) {
-          if (temp == 0) {
-            if (mode != MODE_STOP) {
-              if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
-                change_state(STATE_ALARM);
-                leds_off();
-                leds_change(Leds_Stop, true);
-                leds_change(Leds_Alarm, true);
+            if (temp < settings.p.controller_shutdown_temperature) {
+              static u32 fires = 0;
+
+              if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0,
+                             0, true)) {
+                fires += 1;
               }
 
-              if (temp < settings.p.controller_shutdown_temperature) {
-                static u32 fires = 0;
-
-                if (timer_fire(&timer_controller_shutdown_temperature, 60000,
-                               0, 0, true)) {
-                  fires += 1;
-                }
-
-                if (fires == 5) {
-                  fires = 0;
-                  mode  = MODE_STOP;
-                  change_state(STATE_ALARM);
-                  leds_off();
-                  leds_change(Leds_Stop, true);
-                  leds_change(Leds_Alarm, true);
-                }
-              } else {
-                timer_reset(&timer_controller_shutdown_temperature);
+              if (fires == 5) {
+                fires = 0;
+                startup_alarm();
               }
             } else {
-              timer_reset(&timer_get_temp);
               timer_reset(&timer_controller_shutdown_temperature);
             }
-          } else if (temp >= 90) {
-            mode = MODE_STOP;
-            change_state(STATE_ALARM);
-            leds_off();
-            leds_change(Leds_Stop, true);
-            leds_change(Leds_Alarm, true);
-          } else if (time > 0) {
+          } else {
             timer_reset(&timer_get_temp);
+            timer_reset(&timer_controller_shutdown_temperature);
           }
+        } else if (temp >= 90) {
+          if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
+            startup_alarm();
+          }
+        } else if (time > 0) {
+          timer_reset(&timer_get_temp);
         }
       }
 
@@ -407,9 +365,6 @@ main(void)
           leds_change(Leds_Pump, false);
         }
       }
-    } else {
-      timer_reset(&timer_menu);
-      display_enable = 1;
     }
 
     leds_display(Leds_Stop);
@@ -466,33 +421,42 @@ get_temp(void)
 
   if (ds18b20_is_temp_read_done) {
     ds18b20_is_temp_read_done = false;
-    res                       = ds18b20_reset();
-    ds18b20_write(0xCC); // Проверка кода датчика
-    ds18b20_write(0x44); // Запуск температурного преобразования
+
+    if (ow_reset()) {
+      ow_send(0xCC); // Проверка кода датчика
+      ow_send(0x44); // Запуск температурного преобразования
+    } else {
+      ds18b20_is_temp_read_done = true;
+      timer_reset(&timer_get_temp);
+    }
   }
 
-  if (timer_fire(&timer_get_temp, 750, 0, 0, true)) {
-    res = ds18b20_reset();
-    ds18b20_write(0xCC); // Проверка кода датчика
-    ds18b20_write(0xBE); // Считываем содержимое ОЗУ
+  if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
+    if (ow_reset()) {
+      ow_send(0xCC); // Проверка кода датчика
+      ow_send(0xBE); // Считываем содержимое ОЗУ
 
-    Temp_LSB = ds18b20_read(); // Читаем первые 2 байта блокнота
-    Temp_MSB = ds18b20_read();
+      Temp_LSB = ow_read(); // Читаем первые 2 байта блокнота
+      Temp_MSB = ow_read();
 
-    // Вычисляем целое значение температуры
-    if (temp) {
-      last_temp = temp;
+      // Вычисляем целое значение температуры
+      if (temp) {
+        last_temp = temp;
+      }
+
+      temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
+
+      // temp ^= 1;
+
+      // temp = (Temp_LSB & 0x0F);
+      // temp_point = temp * 625 / 1000; // Точность
+      // темпер.преобразования(0.0625)
+
+      ds18b20_is_temp_read_done = true;
+    } else {
+      ds18b20_is_temp_read_done = true;
+      timer_reset(&timer_get_temp);
     }
-
-    temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
-
-    // temp ^= 1;
-
-    // temp = (Temp_LSB & 0x0F);
-    // temp_point = temp * 625 / 1000; // Точность
-    // темпер.преобразования(0.0625)
-
-    ds18b20_is_temp_read_done = true;
   }
 
   return res;
@@ -542,9 +506,10 @@ handle_buttons(void)
     if (button_pressed(BUTTON_MENU)) {
       menu_timer_enable = 1;
     } else if (button_released(BUTTON_MENU)) {
+      menu_timer_enable = 0;
+
       if (state != STATE_MENU) {
-        menu_timer_enable = 0;
-        menu_seconds      = 0;
+        menu_seconds = 0;
       }
 
       if (last_state == STATE_HOME || last_state == STATE_ALARM) {
@@ -732,6 +697,7 @@ handle_buttons(void)
       leds_off();
       leds_change(Leds_Stop, true);
       timer_reset(&timer_controller_shutdown_temperature);
+      timer_reset(&timer_ow_alarm);
       menu_timer_enable = 0;
       menu_seconds      = 0;
       display_enable    = 1;
@@ -739,6 +705,24 @@ handle_buttons(void)
     break;
   }
   }
+}
+
+void
+startup_alarm(void)
+{
+  mode = MODE_STOP;
+  change_state(STATE_ALARM);
+  leds_off();
+  leds_change(Leds_Stop, true);
+  leds_change(Leds_Alarm, true);
+  timer_reset(&timer_work_fun);
+  timer_reset(&timer_controller_shutdown_temperature);
+  timer_reset(&timer_menu);
+  timer_reset(&timer_get_temp);
+  timer_reset(&timer_ow_alarm);
+  menu_timer_enable = 0;
+  menu_seconds      = 0;
+  display_enable    = 1;
 }
 
 void
@@ -817,40 +801,29 @@ button_down(u8 code)
 
 // Инициализация DS18B20
 u8
-ds18b20_reset(void)
+ow_reset(void)
 {
-  DISABLE_INTERRUPTS();
-  PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
-  PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
-  ENABLE_INTERRUPTS();
+  b8 res = false;
 
-  _delay_us(640);
-
-  DISABLE_INTERRUPTS();
-  PIN_STATE_HIGH(PIN_OW_PORT, PIN_OW);
-  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
-
-  // Время необходимое подтягивающему резистору, чтобы вернуть высокий уровень
-  // на шине
-  _delay_us(2);
-
-  // Ждём не менее 60 мс до появления импульса присутствия;
-  for (u8 c = 80; c; c--) {
-    if (!(PIN_OW_READ & (1 << PIN_OW))) {
-      // Если обнаружен импульс присутствия, ждём его окончания
-      while (!(PIN_OW_READ & (1 << PIN_OW))) {
-      } // Ждём конца сигнала присутствия
-      return 1;
-    }
-    _delay_us(1);
+  res = ow_skip();
+  if (res) {
+    DISABLE_INTERRUPTS();
+    PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
+    PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
+    _delay_us(640);
+    PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+    _delay_us(80);
+    ENABLE_INTERRUPTS();
+    res = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
+    _delay_us(410);
   }
 
-  return 0;
+  return res;
 }
 
 // Функция чтения байта из DS18B20
 u8
-ds18b20_read(void)
+ow_read(void)
 {
   u8 res = 0;
   u8 i   = 0;
@@ -879,7 +852,7 @@ ds18b20_read(void)
 }
 
 u8
-ds18b20_read_bit(void)
+ow_read_bit(void)
 {
   u8 res = 0;
 
@@ -898,7 +871,7 @@ ds18b20_read_bit(void)
 
 // Функция записи байта в DS18B20
 void
-ds18b20_write(u8 data)
+ow_send(u8 data)
 {
   u8 i = 0;
 
@@ -928,73 +901,22 @@ ds18b20_write(u8 data)
 }
 
 b8
-ds18b20_search_device(void)
+ow_skip(void)
 {
-  b8 res = false;
+  u8 retries = 80;
 
-  res = ds18b20_reset();
-
-  if (res) {
-    ds18b20_write(0xF0); // Отправляем команду поиска устройства
-
-    DISABLE_INTERRUPTS();
-
-    PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
-    PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
-
-    _delay_us(3);
-
-    PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
-
-    _delay_us(10);
-
-    res = !(PIN_OW_READ & (1 << PIN_OW));
-
-    ENABLE_INTERRUPTS();
-
-    _delay_us(53);
-  }
-
-  return res;
-}
-
-b8
-ds18b20_is_live(void)
-{
-  b8 ok = false;
-
-  ok = ds18b20_reset();
-
-  if (ok) {
-    ds18b20_write(0xF0); // Отправляем команду поиска устройства
-
-    u8 id_bit     = ds18b20_read_bit();
-    u8 cmp_id_bit = ds18b20_read_bit();
-
-    // check for no devices on 1-wire
-    if ((id_bit == 1) && (cmp_id_bit == 1)) {
-      return false;
-    }
-
-    DISABLE_INTERRUPTS();
-
-    PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
-    PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
-
-    _delay_us(3);
-
-    PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
-
-    _delay_us(10);
-
-    ok = !(PIN_OW_READ & (1 << PIN_OW));
-
-    _delay_us(53);
-  }
-
+  DISABLE_INTERRUPTS();
+  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
   ENABLE_INTERRUPTS();
 
-  return ok;
+  do {
+    if (--retries == 0) {
+      return false;
+    }
+    _delay_us(1);
+  } while (!(PIN_OW_READ & (1 << PIN_OW)));
+
+  return true;
 }
 
 void
@@ -1089,29 +1011,26 @@ ISR(TIMER1_COMPA_vect)
   time += 1;
   start_time += 1;
 
-  if (state != STATE_ALARM) {
-    if (menu_timer_enable) {
-      if (time / 1000 > prev_time / 1000) {
-        menu_seconds += 1;
-      }
-
-      if (menu_seconds >= 2 && state == STATE_HOME) {
-        change_state(STATE_MENU);
-      }
-
-      if (menu_seconds >= 5 && state != STATE_HOME) {
-        change_state(STATE_HOME);
-        if (last_state == STATE_MENU_TEMP_CHANGE
-            || last_state == STATE_MENU_PARAMETERS
-            || last_state == STATE_MENU) {
-          last_state = STATE_HOME;
-        }
-        menu_timer_enable = 0;
-        menu_seconds      = 0;
-      }
-    } else {
-      menu_seconds = 0;
+  if (menu_timer_enable) {
+    if (time / 1000 > prev_time / 1000) {
+      menu_seconds += 1;
     }
+
+    if (menu_seconds >= 2 && state == STATE_HOME) {
+      change_state(STATE_MENU);
+    }
+
+    if (menu_seconds >= 5 && state != STATE_HOME) {
+      change_state(STATE_HOME);
+      if (last_state == STATE_MENU_TEMP_CHANGE
+          || last_state == STATE_MENU_PARAMETERS || last_state == STATE_MENU) {
+        last_state = STATE_HOME;
+      }
+      menu_timer_enable = 0;
+      menu_seconds      = 0;
+    }
+  } else {
+    menu_seconds = 0;
   }
 }
 
