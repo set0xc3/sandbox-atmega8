@@ -103,6 +103,13 @@ static char display_segment_menu[10][2] = {
   { 0b01111100, 0b10001111 }, // UF
 };
 
+typedef enum Error {
+  Error_None             = 0,
+  Error_Temp_Sensor      = 1 << 0, // 00000001
+  Error_Low_Temperature  = 1 << 1, // 00000010
+  Error_High_Temperature = 1 << 2, // 00000100
+} Error;
+
 typedef enum Mode {
   MODE_STOP,
   MODE_RASTOPKA,
@@ -137,6 +144,26 @@ typedef enum Parameters {
   UF,
 } Parameters;
 
+typedef struct Timer32 {
+  b8  is_fire_done;
+  u32 time_wait;
+  u32 time_work;
+  u32 time_sleep;
+} Timer32;
+
+typedef enum Temp_Step {
+  Temp_Step_Convert,
+  Temp_Step_Read,
+  Temp_Step_Done,
+} Temp_Step;
+
+typedef struct Temp_Ctx {
+  // u32 temp_point; // Переменная для дробного значения температуры
+  u32       last_temp, temp;
+  Temp_Step step;
+  Timer32   timer;
+} Temp_Ctx;
+
 // Структура для хранения параметров меню
 typedef union Settings {
   struct {
@@ -165,25 +192,24 @@ static Parameters menu_idx          = CP;
 static u8         menu_seconds      = 0; // 2s
 static u8         menu_timer_enable = 0;
 
-static Mode     mode = MODE_STOP;
+static Error    error_flags = Error_None;
+static Mode     mode        = MODE_STOP;
 static State    last_state, state = STATE_HOME;
 static Settings settings;
+static u8       setting_target_temp = 0;
 
-volatile u8 buttons[BUTTON_COUNT];
-volatile u8 last_buttons[BUTTON_COUNT];
+// Temp
+static Temp_Ctx temp_ctx;
 
-volatile u32 prev_time, time = 0;
+static u8 buttons[BUTTON_COUNT];
+static u8 last_buttons[BUTTON_COUNT];
 
-volatile u8 last_temp, temp;
-volatile u8 target_temp;
-// static u32 temp_point; // Переменная для дробного значения температуры
-
-static b8 ds18b20_is_temp_read_done = true;
+static u32 prev_time, time = 0;
 
 // Прототипы функций
 static void init_io(void);
 static void init_timers(void);
-static b8   get_temp(void);
+static b8   get_temp(Temp_Ctx *self);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
 static void startup_alarm(void);
@@ -234,17 +260,10 @@ static void leds_display(Leds led);
 static void leds_change(Leds led, b8 enable);
 static void leds_off(void);
 
-typedef struct Timer32 {
-  b8  is_fire_done;
-  u32 time_wait;
-  u32 time_work;
-  u32 time_sleep;
-} Timer32;
-
 static Timer32 timer_work_fun;
 static Timer32 timer_controller_shutdown_temperature;
 static Timer32 timer_menu;
-static Timer32 timer_get_temp;
+static Timer32 timer_temp_alarm;
 static Timer32 timer_ow_alarm;
 
 static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
@@ -260,19 +279,26 @@ main(void)
   init_timers();
   leds_init();
 
-  while (1) {
+  do {
+    if (!ow_reset()) {
+      error_flags = Error_Temp_Sensor;
+      startup_alarm();
+    }
+  } while (timer_fire(&timer_ow_alarm, 0, 1000, 0, false));
+
+  while (true) {
     _delay_ms(1);
 
     handle_buttons();
 
-    if (!ow_reset()) {
+    if (ow_reset()) {
+      get_temp(&temp_ctx);
+    } else {
       if (timer_fire(&timer_ow_alarm, 1000, 0, 0, true)) {
-        temp = 0;
+        error_flags = Error_Temp_Sensor;
         startup_alarm();
       }
     }
-
-    get_temp();
 
     if (state != STATE_ALARM) {
       if (state == STATE_MENU_TEMP_CHANGE) {
@@ -289,14 +315,17 @@ main(void)
         }
       }
 
-      if (ds18b20_is_temp_read_done) {
-        if (temp == 0) {
-          if (mode != MODE_STOP) {
-            if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
+      if (mode != MODE_STOP) {
+        if (temp_ctx.temp == 0) {
+          if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
+            error_flags = Error_Temp_Sensor;
+            startup_alarm();
+          } else if (temp_ctx.temp >= 90) {
+            if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
+              error_flags = Error_High_Temperature;
               startup_alarm();
-            }
-
-            if (temp < settings.p.controller_shutdown_temperature) {
+            } else if (temp_ctx.temp
+                       < settings.p.controller_shutdown_temperature) {
               static u32 fires = 0;
 
               if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0,
@@ -305,32 +334,31 @@ main(void)
               }
 
               if (fires == 5) {
-                fires = 0;
+                fires       = 0;
+                error_flags = Error_Low_Temperature;
                 startup_alarm();
               }
             } else {
               timer_reset(&timer_controller_shutdown_temperature);
             }
-          } else {
-            timer_reset(&timer_get_temp);
-            timer_reset(&timer_controller_shutdown_temperature);
+          } else if (temp_ctx.temp > 0) {
+            timer_reset(&timer_temp_alarm);
           }
-        } else if (temp >= 90) {
-          if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
-            startup_alarm();
-          }
-        } else if (time > 0) {
-          timer_reset(&timer_get_temp);
         }
+
+      } else {
+        timer_reset(&timer_temp_alarm);
+        timer_reset(&timer_controller_shutdown_temperature);
       }
 
+      // Алгоритм работы
       if (mode == MODE_STOP && state != STATE_ALARM) {
         leds_off();
         leds_change(Leds_Stop, true);
       } else if (mode == MODE_RASTOPKA || mode == MODE_CONTROL) {
         leds_change(Leds_Stop, false);
 
-        if (temp < 35) {
+        if (temp_ctx.temp < 35) {
           // Вентилятор начнет работу в ручном режиме.
           mode = MODE_RASTOPKA;
           leds_change(Leds_Control, false);
@@ -338,14 +366,15 @@ main(void)
           leds_change(Leds_Fan, true);
         } else {
           // Вентилятор начнет работу в автоматическом режиме.
-          if (temp >= target_temp + settings.p.hysteresis) {
+          if (temp_ctx.temp >= setting_target_temp + settings.p.hysteresis) {
             mode = MODE_CONTROL;
             leds_change(Leds_Fan, false);
             leds_change(Leds_Control, true);
             leds_change(Leds_Rastopka, false);
 
             timer_reset(&timer_work_fun);
-          } else if (temp <= target_temp - settings.p.hysteresis) {
+          } else if (temp_ctx.temp
+                     <= setting_target_temp - settings.p.hysteresis) {
             mode = MODE_RASTOPKA;
             leds_change(Leds_Rastopka, true);
             leds_change(Leds_Control, false);
@@ -360,7 +389,7 @@ main(void)
           }
         }
 
-        if (temp >= settings.p.pump_connection_temperature) {
+        if (temp_ctx.temp >= settings.p.pump_connection_temperature) {
           leds_change(Leds_Pump, true);
         } else {
           leds_change(Leds_Pump, false);
@@ -414,64 +443,56 @@ init_timers(void)
 }
 
 b8
-get_temp(void)
+get_temp(Temp_Ctx *self)
 {
-  static Timer32 timer_get_temp;
-
   b8 res = false;
 
-  if (ds18b20_is_temp_read_done) {
-    ds18b20_is_temp_read_done = false;
+  self->last_temp = self->temp;
 
+  self->step = self->step == Temp_Step_Done ? Temp_Step_Convert : self->step;
+
+  switch (self->step) {
+  case Temp_Step_Convert: {
     if (ow_reset()) {
       ow_send(0xCC); // Проверка кода датчика
       ow_send(0x44); // Запуск температурного преобразования
-    } else {
-      ds18b20_is_temp_read_done = true;
-      timer_reset(&timer_get_temp);
+
+      timer_reset(&self->timer);
+      self->step = Temp_Step_Read;
     }
-  }
+  } break;
 
-  if (timer_fire(&timer_get_temp, 1000, 0, 0, true)) {
-    if (ow_reset()) {
-      u8 crc = 0;
-      u8 scratchpad[8];
+  case Temp_Step_Read: {
+    if (timer_fire(&self->timer, 1000, 0, 0, true)) {
+      if (ow_reset()) {
+        u8 crc = 0;
+        u8 scratchpad[8];
 
-      ow_send(0xCC); // Проверка кода датчика
-      ow_send(0xBE); // Считываем содержимое ОЗУ
+        ow_send(0xCC); // Проверка кода датчика
+        ow_send(0xBE); // Считываем содержимое ОЗУ
 
-      crc = 0;
-
-      for (u8 i = 0; i < 8; i++) {
-        u8 b          = ow_read();
-        scratchpad[i] = b;
-        crc           = ow_crc_update(crc, b);
-      }
-      if (ow_read() == crc) {
-        if (temp) {
-          last_temp = temp;
+        for (u8 i = 0; i < 8; i++) {
+          u8 b          = ow_read();
+          scratchpad[i] = b;
+          crc           = ow_crc_update(crc, b);
         }
-        temp = ((scratchpad[1] << 4) & 0x70) | (scratchpad[0] >> 4);
-      } else {
-        if (temp) {
-          last_temp = temp;
+        if (ow_read() == crc) {
+          self->temp = ((scratchpad[1] << 4) & 0x70) | (scratchpad[0] >> 4);
+          res        = true;
         }
-        temp = 0;
+#if 0
+        temp = (Temp_LSB & 0x0F);
+        temp_point = temp * 625 / 1000; // Точность
+        темпер.преобразования(0.0625)
+#endif
       }
 
-      // temp = ((Temp_MSB << 4) & 0x70) | (Temp_LSB >> 4);
-
-      // temp ^= 1;
-
-      // temp = (Temp_LSB & 0x0F);
-      // temp_point = temp * 625 / 1000; // Точность
-      // темпер.преобразования(0.0625)
-
-      ds18b20_is_temp_read_done = true;
-    } else {
-      ds18b20_is_temp_read_done = true;
-      timer_reset(&timer_get_temp);
+      self->step = Temp_Step_Done;
     }
+  } break;
+
+  default:
+    break;
   }
 
   return res;
@@ -549,7 +570,8 @@ handle_buttons(void)
     if (button_pressed(BUTTON_UP)) {
       menu_seconds = 0;
       start_time   = time;
-      target_temp  = target_temp < 80 ? target_temp + 1 : 80;
+      setting_target_temp
+          = setting_target_temp < 80 ? setting_target_temp + 1 : 80;
       change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
       break;
@@ -557,7 +579,8 @@ handle_buttons(void)
     if (button_pressed(BUTTON_DOWN)) {
       menu_seconds = 0;
       start_time   = time;
-      target_temp  = target_temp > 35 ? target_temp - 1 : 35;
+      setting_target_temp
+          = setting_target_temp > 35 ? setting_target_temp - 1 : 35;
       change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
       break;
@@ -575,7 +598,8 @@ handle_buttons(void)
     if (button_pressed(BUTTON_UP)) {
       menu_seconds = 0;
       start_time   = time;
-      target_temp  = target_temp < 80 ? target_temp + 1 : 80;
+      setting_target_temp
+          = setting_target_temp < 80 ? setting_target_temp + 1 : 80;
       change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
       break;
@@ -583,7 +607,8 @@ handle_buttons(void)
     if (button_pressed(BUTTON_DOWN)) {
       menu_seconds = 0;
       start_time   = time;
-      target_temp  = target_temp > 35 ? target_temp - 1 : 35;
+      setting_target_temp
+          = setting_target_temp > 35 ? setting_target_temp - 1 : 35;
       change_state(STATE_MENU_TEMP_CHANGE);
       menu_timer_enable = 1;
       break;
@@ -593,7 +618,8 @@ handle_buttons(void)
       menu_seconds       = 0;
       u32 press_duration = time - start_time;
       if (press_duration >= 800) {
-        target_temp = target_temp < 80 ? target_temp + 1 : 80;
+        setting_target_temp
+            = setting_target_temp < 80 ? setting_target_temp + 1 : 80;
         _delay_ms(10);
       }
       break;
@@ -602,7 +628,8 @@ handle_buttons(void)
       menu_seconds       = 0;
       u32 press_duration = time - start_time;
       if (press_duration >= 800) {
-        target_temp = target_temp > 35 ? target_temp - 1 : 35;
+        setting_target_temp
+            = setting_target_temp > 35 ? setting_target_temp - 1 : 35;
         _delay_ms(10);
       }
       break;
@@ -707,7 +734,8 @@ handle_buttons(void)
 
   case STATE_ALARM: {
     if (button_released(BUTTON_MENU)) {
-      mode = MODE_STOP;
+      error_flags = Error_None;
+      mode        = MODE_STOP;
       change_state(STATE_HOME);
       leds_off();
       leds_change(Leds_Stop, true);
@@ -733,7 +761,7 @@ startup_alarm(void)
   timer_reset(&timer_work_fun);
   timer_reset(&timer_controller_shutdown_temperature);
   timer_reset(&timer_menu);
-  timer_reset(&timer_get_temp);
+  timer_reset(&timer_temp_alarm);
   timer_reset(&timer_ow_alarm);
   menu_timer_enable = 0;
   menu_seconds      = 0;
@@ -753,7 +781,7 @@ settings_reset(void)
   settings.p.controller_shutdown_temperature = 30; // 25-50
   settings.p.sound_signal_enabled            = 1;  // 0-1
   settings.p.factory_settings                = 0;  // 0-1
-  target_temp                                = 60;
+  setting_target_temp                        = 60;
 }
 
 void
@@ -1040,16 +1068,20 @@ ISR(TIMER2_COMP_vect)
 {
   switch (state) {
   case STATE_HOME:
-    display_menu(display_segment_numbers[temp % 100 / 10],
-                 display_segment_numbers[temp % 10]);
+    display_menu(display_segment_numbers[temp_ctx.temp % 100 / 10],
+                 display_segment_numbers[temp_ctx.temp % 10]);
     break;
   case STATE_ALARM:
-    display_menu(display_segment_numbers[temp % 100 / 10],
-                 display_segment_numbers[temp % 10]);
+    if (error_flags == Error_Temp_Sensor) {
+      display_menu(display_segment_numbers[10], display_segment_numbers[10]);
+    } else if (error_flags == Error_None) {
+      display_menu(display_segment_numbers[temp_ctx.temp % 100 / 10],
+                   display_segment_numbers[temp_ctx.temp % 10]);
+    }
     break;
   case STATE_MENU_TEMP_CHANGE:
-    display_menu(display_segment_numbers[target_temp % 100 / 10],
-                 display_segment_numbers[target_temp % 10]);
+    display_menu(display_segment_numbers[setting_target_temp % 100 / 10],
+                 display_segment_numbers[setting_target_temp % 10]);
     break;
   case STATE_MENU:
     display_menu(display_segment_menu[menu_idx][0],
