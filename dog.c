@@ -320,35 +320,33 @@ main(void)
           if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
             error_flags = Error_Temp_Sensor;
             startup_alarm();
-          } else if (temp_ctx.temp >= 90) {
-            if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
-              error_flags = Error_High_Temperature;
-              startup_alarm();
-            } else if (temp_ctx.temp
-                       < settings.p.controller_shutdown_temperature) {
-              static u32 fires = 0;
-
-              if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0,
-                             0, true)) {
-                fires += 1;
-              }
-
-              if (fires == 5) {
-                fires       = 0;
-                error_flags = Error_Low_Temperature;
-                startup_alarm();
-              }
-            } else {
-              timer_reset(&timer_controller_shutdown_temperature);
-            }
-          } else if (temp_ctx.temp > 0) {
-            timer_reset(&timer_temp_alarm);
           }
         }
+      }
 
-      } else {
+      if (temp_ctx.temp >= 90) {
+        if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
+          error_flags = Error_High_Temperature;
+          startup_alarm();
+        } else if (temp_ctx.temp
+                   < settings.p.controller_shutdown_temperature) {
+          static u32 fires = 0;
+
+          if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0, 0,
+                         true)) {
+            fires += 1;
+          }
+
+          if (fires == 5) {
+            fires       = 0;
+            error_flags = Error_Low_Temperature;
+            startup_alarm();
+          }
+        } else {
+          timer_reset(&timer_controller_shutdown_temperature);
+        }
+      } else if (temp_ctx.temp > 0) {
         timer_reset(&timer_temp_alarm);
-        timer_reset(&timer_controller_shutdown_temperature);
       }
 
       // Алгоритм работы
@@ -1074,7 +1072,7 @@ ISR(TIMER2_COMP_vect)
   case STATE_ALARM:
     if (error_flags == Error_Temp_Sensor) {
       display_menu(display_segment_numbers[10], display_segment_numbers[10]);
-    } else if (error_flags == Error_None) {
+    } else {
       display_menu(display_segment_numbers[temp_ctx.temp % 100 / 10],
                    display_segment_numbers[temp_ctx.temp % 10]);
     }
