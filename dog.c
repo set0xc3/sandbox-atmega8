@@ -74,6 +74,11 @@ typedef i8 b8;
 #define PIN_OW_DDR  DDRD
 #define PIN_OW_PORT PORTD
 
+// Пины для вентилятора
+#define PIN_FAN      PD3
+#define PIN_FAN_DDR  DDRD
+#define PIN_FAN_PORT PORTD
+
 // Массив значениий для семисегментного индикатора
 static char display_segment_numbers[12] = {
   0b11111100, // 0
@@ -270,6 +275,24 @@ static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
                        u32 time_sleep, b8 loop);
 static void timer_reset(Timer32 *timer);
 
+static inline void
+fan_enable(void)
+{
+  leds_change(Leds_Control, false);
+  leds_change(Leds_Rastopka, true);
+  leds_change(Leds_Fan, true);
+  PIN_MODE_OUTPUT(PIN_FAN_DDR, PIN_FAN);
+  PIN_STATE_HIGH(PIN_FAN_PORT, PIN_FAN);
+}
+
+static inline void
+fan_disable(void)
+{
+  PIN_MODE_OUTPUT(PIN_FAN_DDR, PIN_FAN);
+  PIN_STATE_LOW(PIN_FAN_PORT, PIN_FAN);
+  leds_change(Leds_Fan, false);
+}
+
 int
 main(void)
 {
@@ -359,14 +382,13 @@ main(void)
         if (temp_ctx.temp < 35) {
           // Вентилятор начнет работу в ручном режиме.
           mode = MODE_RASTOPKA;
-          leds_change(Leds_Control, false);
-          leds_change(Leds_Rastopka, true);
-          leds_change(Leds_Fan, true);
+
+          fan_enable();
         } else {
           // Вентилятор начнет работу в автоматическом режиме.
           if (temp_ctx.temp >= setting_target_temp + settings.p.hysteresis) {
             mode = MODE_CONTROL;
-            leds_change(Leds_Fan, false);
+            fan_disable();
             leds_change(Leds_Control, true);
             leds_change(Leds_Rastopka, false);
 
@@ -379,10 +401,11 @@ main(void)
           }
 
           if (mode == MODE_RASTOPKA) {
-            if (timer_fire(&timer_work_fun, 0, 1000, 1000, true)) {
-              leds_change(Leds_Fan, true);
+            if (timer_fire(&timer_work_fun, 0, settings.p.fan_work_duration * 1000,
+                           settings.p.fan_pause_duration * 1000, true)) {
+              fan_enable();
             } else {
-              leds_change(Leds_Fan, false);
+              fan_disable();
             }
           }
         }
