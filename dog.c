@@ -16,6 +16,47 @@ typedef int64_t i64;
 typedef float  f32;
 typedef double f64;
 
+// BASE
+
+#define F_CPU 1000000UL
+
+#include <avr/interrupt.h>
+#include <avr/io.h>
+#include <string.h>
+#include <util/delay.h>
+
+static inline void
+interrupts_enable(void)
+{
+  sei();
+}
+
+static inline void
+interrupts_disable(void)
+{
+  cli();
+}
+
+static inline void
+delay_us(uint32_t value)
+{
+  _delay_us(value);
+}
+
+static inline void
+delay_ms(uint32_t value)
+{
+  _delay_ms(value);
+}
+
+// GPIO
+
+static inline void
+gpio_set_mode_input(volatile uint8_t *port, uint8_t pin)
+{
+  *port &= ~(1 << pin);
+}
+
 static inline void
 gpio_set_mode_output(volatile uint8_t *port, uint8_t pin)
 {
@@ -34,31 +75,98 @@ gpio_write_height(volatile uint8_t *port, uint8_t pin)
   *port |= (1 << pin);
 }
 
-#define PIN_MODE_INPUT(port, pin)                                             \
-  ((port) &= ~(1 << (pin))) // Макрос для установки пина как вход
-#define PIN_MODE_OUTPUT(port, pin)                                            \
-  ((port) |= (1 << (pin))) // Макрос для установки пина как выход
-#define PIN_STATE_LOW(port, pin)                                              \
-  ((port) &= ~(                                                               \
-       1 << (pin))) // Макрос для установки пина в состояние "низкий уровень"
-#define PIN_STATE_HIGH(port, pin)                                             \
-  ((port)                                                                     \
-   |= (1                                                                      \
-       << (pin))) // Макрос для установки пина в состояние "высокий уровень"
-#define PIN_READ(port, pin)                                                   \
-  ((port & (1 << pin))) // Макрос для чтения данных с пина
+static inline uint8_t
+gpio_read(volatile uint8_t *port, uint8_t pin)
+{
+  return *port |= (1 << pin);
+}
 
-// BASE
+// Time
 
-#define F_CPU 1000000UL
+#define SECONDS(value) ((uint32_t)value * 1000UL)
+#define MINUTES(value) ((uint32_t)value * 60UL * 1000UL)
 
-#include <avr/interrupt.h>
-#include <avr/io.h>
-#include <string.h>
-#include <util/delay.h>
+typedef struct Timer32 {
+  bool     wait_done, sleep_pending;
+  uint32_t ticks;
+} Timer32;
 
-#define ENABLE_INTERRUPTS()  sei()
-#define DISABLE_INTERRUPTS() cli()
+static volatile uint32_t s_ticks;
+
+static inline uint32_t
+get_ticks(void)
+{
+  return s_ticks;
+}
+
+static inline void
+timer_reset(Timer32 *timer)
+{
+  memset(timer, 0, sizeof(Timer32));
+}
+
+static inline bool
+timer_expired(uint32_t *ticks, uint32_t period, uint32_t now_ticks)
+{
+  if (ticks == 0) {
+    return false;
+  }
+
+  // Если первый опрос, установить время завершения
+  if (*ticks == 0) {
+    *ticks = now_ticks + period;
+  }
+
+  if (now_ticks < *ticks) {
+    return false;
+  }
+
+  *ticks = now_ticks + period;
+
+  return true;
+}
+
+static inline bool
+timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
+                  uint32_t sleep_duration, uint32_t now_ticks)
+{
+  if (self == 0) {
+    return false;
+  }
+
+  if (!self->wait_done) {
+    // Если первый опрос, установить время завершения
+    if (self->ticks == 0) {
+      self->ticks = now_ticks + wait;
+      return false;
+    }
+
+    if (now_ticks < self->ticks) {
+      return false;
+    }
+
+    self->wait_done = true;
+    self->ticks     = now_ticks + period;
+  }
+
+  // Засыпание
+  if (self->sleep_pending && now_ticks <= self->ticks) {
+    return false;
+  } else if (self->sleep_pending) {
+    self->sleep_pending = false;
+    self->ticks         = now_ticks + period;
+  }
+
+  // Работа
+  if (self->ticks >= now_ticks) {
+    return true;
+  }
+
+  self->sleep_pending = true;
+  self->ticks         = now_ticks + sleep_duration;
+
+  return false;
+}
 
 #define ARRAY_COUNT(a) (sizeof((a)) / sizeof(*(a)))
 
@@ -171,11 +279,6 @@ typedef enum Temp_Step {
   Temp_Step_Done,
 } Temp_Step;
 
-typedef struct Timer32 {
-  bool     wait_done, sleep_pending;
-  uint32_t ticks;
-} Timer32;
-
 typedef struct Temp_Ctx {
   // u32 temp_point; // Переменная для дробного значения температуры
   u32       last_temp, temp;
@@ -211,7 +314,7 @@ typedef union Settings {
 // Глобальные переменные
 static u8 display_enable = 1;
 
-static i8 menu_idx          = CP;
+static u8 menu_idx          = CP;
 static u8 menu_seconds      = 0; // 2s
 static u8 menu_timer_enable = 0;
 
@@ -231,7 +334,6 @@ static u32 prev_time = 0;
 
 // Прототипы функций
 static void init_io(void);
-static void init_timers(void);
 static bool get_temp(Temp_Ctx *self);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
@@ -289,58 +391,42 @@ static Timer32 timer_menu;
 static Timer32 timer_temp_alarm;
 static Timer32 timer_ow_alarm;
 
-static volatile uint32_t s_ticks;
-
 static inline void menu_button(u8 code, i8 value);
 static inline void menu_parameters_button(u8 code, i8 value);
 static inline void menu_change_temp_button(u8 code, i8 value);
 
+// System
+
 static inline void
-timer_reset(Timer32 *timer)
+system_tick_init(void)
 {
-  memset(timer, 0, sizeof(Timer32));
-}
+  // Настройка Timer1
+  {
+    // устанавливаем режим СТС (сброс по совпадению)
+    TCCR1B |= (1 << WGM12);
 
-static inline bool
-timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
-                  uint32_t sleep_duration, uint32_t now_time)
-{
-  if (self == 0) {
-    return false;
+    // Установка предделителя 8
+    TCCR1B |= (1 << CS10);
+
+    // Разрешение прерывания по сравнению
+    TIMSK |= (1 << OCIE1A);
+
+    // Установка значение для сравнения (1 мс для тактовой частоты 1 МГц и
+    // предделителя 1)
+    OCR1A = 999;
   }
 
-  if (!self->wait_done) {
-    // Если первый опрос, установить время завершения
-    if (self->ticks == 0) {
-      self->ticks = now_time + wait;
-      return false;
-    }
-
-    if (now_time < self->ticks) {
-      return false;
-    }
-
-    self->wait_done = true;
-    self->ticks     = now_time + period;
+  // Настройка Timer2
+  {
+    // Настройка предделителя и запуск таймера
+    TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21)
+            | (1 << CS20); // Prescaler 1024
+    TIMSK |= (1 << OCIE2);
+    OCR2 = 4; // 5ms for 1MHz clock
   }
 
-  // Засыпание
-  if (self->sleep_pending && now_time <= self->ticks) {
-    return false;
-  } else if (self->sleep_pending) {
-    self->sleep_pending = false;
-    self->ticks         = now_time + period;
-  }
-
-  // Работа
-  if (self->ticks >= now_time) {
-    return true;
-  }
-
-  self->sleep_pending = true;
-  self->ticks         = now_time + sleep_duration;
-
-  return false;
+  // Разрешение глобальных прерываний
+  interrupts_enable();
 }
 
 static inline void
@@ -349,15 +435,15 @@ fan_enable(void)
   leds_change(Leds_Control, false);
   leds_change(Leds_Rastopka, true);
   leds_change(Leds_Fan, true);
-  PIN_MODE_OUTPUT(PIN_FAN_DDR, PIN_FAN);
-  PIN_STATE_HIGH(PIN_FAN_PORT, PIN_FAN);
+  gpio_set_mode_output(&PIN_FAN_DDR, PIN_FAN);
+  gpio_write_height(&PIN_FAN_PORT, PIN_FAN);
 }
 
 static inline void
 fan_disable(void)
 {
-  PIN_MODE_OUTPUT(PIN_FAN_DDR, PIN_FAN);
-  PIN_STATE_LOW(PIN_FAN_PORT, PIN_FAN);
+  gpio_set_mode_output(&PIN_FAN_DDR, PIN_FAN);
+  gpio_write_low(&PIN_FAN_PORT, PIN_FAN);
   leds_change(Leds_Fan, false);
 }
 
@@ -367,7 +453,7 @@ main(void)
   settings_reset();
 
   init_io();
-  init_timers();
+  system_tick_init();
   leds_init();
 
   do {
@@ -515,38 +601,6 @@ init_io(void)
                  | (1 << PIN_LED_PUMP) | (1 << PIN_LED_FAN);
 }
 
-void
-init_timers(void)
-{
-  // Настройка Timer1
-  {
-    // устанавливаем режим СТС (сброс по совпадению)
-    TCCR1B |= (1 << WGM12);
-
-    // Установка предделителя 8
-    TCCR1B |= (1 << CS10);
-
-    // Разрешение прерывания по сравнению
-    TIMSK |= (1 << OCIE1A);
-
-    // Установка значение для сравнения (1 мс для тактовой частоты 1 МГц и
-    // предделителя 1)
-    OCR1A = 999;
-  }
-
-  // Настройка Timer2
-  {
-    // Настройка предделителя и запуск таймера
-    TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21)
-            | (1 << CS20); // Prescaler 1024
-    TIMSK |= (1 << OCIE2);
-    OCR2 = 4; // 5ms for 1MHz clock
-  }
-
-  // Разрешение глобальных прерываний
-  ENABLE_INTERRUPTS();
-}
-
 bool
 get_temp(Temp_Ctx *self)
 {
@@ -641,7 +695,8 @@ menu_button(u8 code, i8 value)
 
   if (button_pressed(code)) {
     menu_seconds = 0;
-    menu_idx     = CLAMP(menu_idx + value, 0, 9);
+    menu_idx
+        = CLAMP(menu_idx + value == UINT8_MAX ? 0 : menu_idx + value, 0, 9);
   }
 
   if (button_released(code)) {
@@ -652,7 +707,8 @@ menu_button(u8 code, i8 value)
     menu_seconds = 0;
 
     if (timer_expired_ext(&timer, 500, 0, 50, s_ticks)) {
-      menu_idx = CLAMP(menu_idx + value, 0, 9);
+      menu_idx
+          = CLAMP(menu_idx + value == UINT8_MAX ? 0 : menu_idx + value, 0, 9);
     }
   }
 }
@@ -687,8 +743,10 @@ menu_change_temp_button(u8 code, i8 value)
   if (button_pressed(code)) {
     menu_seconds = 0;
     setting_target_temp.value
-        = CLAMP(setting_target_temp.value + value, setting_target_temp.min,
-                setting_target_temp.max);
+        = CLAMP(setting_target_temp.value + value == UINT8_MAX
+                    ? 0
+                    : setting_target_temp.value + value,
+                setting_target_temp.min, setting_target_temp.max);
     change_state(STATE_MENU_TEMP_CHANGE);
     menu_timer_enable = 1;
   }
@@ -701,8 +759,10 @@ menu_change_temp_button(u8 code, i8 value)
     menu_seconds = 0;
     if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
       setting_target_temp.value
-          = CLAMP(setting_target_temp.value + value, setting_target_temp.min,
-                  setting_target_temp.max);
+          = CLAMP(setting_target_temp.value + value == UINT8_MAX
+                      ? 0
+                      : setting_target_temp.value + value,
+                  setting_target_temp.min, setting_target_temp.max);
     }
   }
 }
@@ -840,8 +900,10 @@ void
 settings_change_params(i8 value)
 {
   settings.e[menu_idx].value
-      = CLAMP(settings.e[menu_idx].value + value, settings.e[menu_idx].min,
-              settings.e[menu_idx].max);
+      = CLAMP(settings.e[menu_idx].value + value == UINT8_MAX
+                  ? 0
+                  : settings.e[menu_idx].value + value,
+              settings.e[menu_idx].min, settings.e[menu_idx].max);
 }
 
 u8
@@ -870,13 +932,13 @@ ow_reset(void)
 
   res = ow_skip();
   if (res) {
-    DISABLE_INTERRUPTS();
-    PIN_STATE_LOW(PIN_OW_PORT, PIN_OW);
-    PIN_MODE_OUTPUT(PIN_OW_DDR, PIN_OW);
+    interrupts_disable();
+    gpio_write_low(&PIN_OW_PORT, PIN_OW);
+    gpio_set_mode_output(&PIN_OW_DDR, PIN_OW);
     _delay_us(640);
-    PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
+    gpio_set_mode_input(&PIN_OW_DDR, PIN_OW);
     _delay_us(80);
-    ENABLE_INTERRUPTS();
+    interrupts_enable();
     res = !(PIN_OW_READ & (1 << PIN_OW)); // Ловим импульс присутствия датчика
     _delay_us(410);
   }
@@ -889,13 +951,13 @@ ow_read_bit(void)
 {
   u8 res = 0;
 
-  DISABLE_INTERRUPTS();
+  interrupts_disable();
   PIN_OW_DDR |= (1 << PIN_OW); // выход
   _delay_us(2);
   PIN_OW_DDR &= ~(1 << PIN_OW); // вход
   _delay_us(8);
   res = PIN_OW_READ & (1 << PIN_OW);
-  ENABLE_INTERRUPTS();
+  interrupts_enable();
   _delay_us(80);
 
   return res;
@@ -920,18 +982,18 @@ ow_read(void)
 void
 ow_send_bit(u8 bit)
 {
-  DISABLE_INTERRUPTS();
+  interrupts_disable();
   PIN_OW_DDR |= (1 << PIN_OW); // выход
 
   if (bit) {
     _delay_us(5);
     PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-    ENABLE_INTERRUPTS();
+    interrupts_enable();
     _delay_us(90);
   } else {
     _delay_us(90);
     PIN_OW_DDR &= ~(1 << PIN_OW); // вход
-    ENABLE_INTERRUPTS();
+    interrupts_enable();
     _delay_us(5);
   }
 }
@@ -952,9 +1014,9 @@ ow_skip(void)
 {
   u8 retries = 80;
 
-  DISABLE_INTERRUPTS();
-  PIN_MODE_INPUT(PIN_OW_DDR, PIN_OW);
-  ENABLE_INTERRUPTS();
+  interrupts_disable();
+  gpio_set_mode_input(&PIN_OW_DDR, PIN_OW);
+  interrupts_enable();
 
   do {
     if (--retries == 0) {
@@ -991,9 +1053,9 @@ void
 leds_display(Leds led)
 {
   if (leds_list[led]) {
-    PIN_STATE_HIGH(PIN_LED_PORT, led);
+    gpio_write_height(&PIN_LED_PORT, led);
   } else {
-    PIN_STATE_LOW(PIN_LED_PORT, led);
+    gpio_write_low(&PIN_LED_PORT, led);
   }
 }
 
