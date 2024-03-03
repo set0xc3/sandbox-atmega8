@@ -1,5 +1,8 @@
 // BASE
 
+#include <stdbool.h>
+#include <stdint.h>
+
 typedef unsigned char      u8;
 typedef unsigned short     u16;
 typedef unsigned int       u32;
@@ -14,9 +17,6 @@ typedef float  f32;
 typedef double f64;
 
 typedef i8 b8;
-
-#define false 0
-#define true  1
 
 #define PIN_MODE_INPUT(port, pin)                                             \
   ((port) &= ~(1 << (pin))) // Макрос для установки пина как вход
@@ -149,18 +149,16 @@ typedef enum Parameters {
   UF,
 } Parameters;
 
-typedef struct Timer32 {
-  b8  is_fire_done;
-  u32 time_wait;
-  u32 time_work;
-  u32 time_sleep;
-} Timer32;
-
 typedef enum Temp_Step {
   Temp_Step_Convert,
   Temp_Step_Read,
   Temp_Step_Done,
 } Temp_Step;
+
+typedef struct Timer32 {
+  bool     wait_done, sleep_pending;
+  uint32_t ticks;
+} Timer32;
 
 typedef struct Temp_Ctx {
   // u32 temp_point; // Переменная для дробного значения температуры
@@ -190,12 +188,11 @@ typedef union Settings {
 } Settings; // 10-bytes
 
 // Глобальные переменные
-static u8 display_idx    = 0;
 static u8 display_enable = 1;
 
-static Parameters menu_idx          = CP;
-static u8         menu_seconds      = 0; // 2s
-static u8         menu_timer_enable = 0;
+static i8 menu_idx          = CP;
+static u8 menu_seconds      = 0; // 2s
+static u8 menu_timer_enable = 0;
 
 static Error    error_flags = Error_None;
 static Mode     mode        = MODE_STOP;
@@ -209,7 +206,7 @@ static Temp_Ctx temp_ctx;
 static u8 buttons[BUTTON_COUNT];
 static u8 last_buttons[BUTTON_COUNT];
 
-static u32 prev_time, time = 0;
+static u32 prev_time = 0;
 
 // Прототипы функций
 static void init_io(void);
@@ -271,9 +268,59 @@ static Timer32 timer_menu;
 static Timer32 timer_temp_alarm;
 static Timer32 timer_ow_alarm;
 
-static b8   timer_fire(Timer32 *timer, u32 time_wait, u32 time_work,
-                       u32 time_sleep, b8 loop);
-static void timer_reset(Timer32 *timer);
+static volatile uint32_t s_ticks;
+
+static inline void menu_button(u8 code, i8 value);
+static inline void menu_parameters_button(u8 code, i8 value);
+static inline void menu_change_temp_button(u8 code, i8 value);
+
+static inline void
+timer_reset(Timer32 *timer)
+{
+  memset(timer, 0, sizeof(Timer32));
+}
+
+static inline bool
+timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
+                  uint32_t sleep_duration, uint32_t now_time)
+{
+  if (self == 0) {
+    return false;
+  }
+
+  if (!self->wait_done) {
+    // Если первый опрос, установить время завершения
+    if (self->ticks == 0) {
+      self->ticks = now_time + wait;
+      return false;
+    }
+
+    if (now_time < self->ticks) {
+      return false;
+    }
+
+    self->wait_done = true;
+    self->ticks     = now_time + period;
+  }
+
+  // Засыпание
+  if (self->sleep_pending && now_time <= self->ticks) {
+    return false;
+  } else if (self->sleep_pending) {
+    self->sleep_pending = false;
+    self->ticks         = now_time + period;
+  }
+
+  // Работа
+  if (self->ticks >= now_time) {
+    return true;
+  }
+
+  self->sleep_pending = true;
+  self->ticks         = now_time + sleep_duration;
+
+  return false;
+}
 
 static inline void
 fan_enable(void)
@@ -307,7 +354,7 @@ main(void)
       error_flags = Error_Temp_Sensor;
       startup_alarm();
     }
-  } while (timer_fire(&timer_ow_alarm, 0, 1000, 0, false));
+  } while (timer_expired_ext(&timer_ow_alarm, 0, 1000, 0, s_ticks));
 
   while (true) {
     _delay_ms(1);
@@ -317,7 +364,7 @@ main(void)
     if (ow_reset()) {
       get_temp(&temp_ctx);
     } else {
-      if (timer_fire(&timer_ow_alarm, 1000, 0, 0, true)) {
+      if (timer_expired_ext(&timer_ow_alarm, 1000, 0, 0, s_ticks)) {
         error_flags = Error_Temp_Sensor;
         startup_alarm();
       }
@@ -325,7 +372,7 @@ main(void)
 
     if (state != STATE_ALARM) {
       if (state == STATE_MENU_TEMP_CHANGE) {
-        if (timer_fire(&timer_menu, 0, 0, 250, true)) {
+        if (timer_expired_ext(&timer_menu, 0, 0, 250, s_ticks)) {
           display_enable ^= 1;
         }
       } else {
@@ -340,7 +387,7 @@ main(void)
 
       if (mode != MODE_STOP) {
         if (temp_ctx.temp == 0) {
-          if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
+          if (timer_expired_ext(&timer_temp_alarm, 1000, 0, 0, s_ticks)) {
             error_flags = Error_Temp_Sensor;
             startup_alarm();
           }
@@ -348,15 +395,15 @@ main(void)
       }
 
       if (temp_ctx.temp >= 90) {
-        if (timer_fire(&timer_temp_alarm, 1000, 0, 0, true)) {
+        if (timer_expired_ext(&timer_temp_alarm, 1000, 0, 0, s_ticks)) {
           error_flags = Error_High_Temperature;
           startup_alarm();
         } else if (temp_ctx.temp
                    < settings.p.controller_shutdown_temperature) {
           static u32 fires = 0;
 
-          if (timer_fire(&timer_controller_shutdown_temperature, 60000, 0, 0,
-                         true)) {
+          if (timer_expired_ext(&timer_controller_shutdown_temperature, 60000,
+                                0, 0, s_ticks)) {
             fires += 1;
           }
 
@@ -401,8 +448,9 @@ main(void)
           }
 
           if (mode == MODE_RASTOPKA) {
-            if (timer_fire(&timer_work_fun, 0, settings.p.fan_work_duration * 1000,
-                           settings.p.fan_pause_duration * 1000, true)) {
+            if (timer_expired_ext(
+                    &timer_work_fun, 0, settings.p.fan_work_duration * 1000,
+                    settings.p.fan_pause_duration * 1000, s_ticks)) {
               fan_enable();
             } else {
               fan_disable();
@@ -448,16 +496,29 @@ void
 init_timers(void)
 {
   // Настройка Timer1
-  TCCR1B = (1 << WGM12) | (1 << CS11); // Prescaler 8
-  TIMSK |= (1 << OCIE1A);
-  OCR1A = 125 - 1; // 1ms for 1MHz clock
+  {
+    // устанавливаем режим СТС (сброс по совпадению)
+    TCCR1B |= (1 << WGM12);
+
+    // Установка предделителя 8
+    TCCR1B |= (1 << CS10);
+
+    // Разрешение прерывания по сравнению
+    TIMSK |= (1 << OCIE1A);
+
+    // Установка значение для сравнения (1 мс для тактовой частоты 1 МГц и
+    // предделителя 1)
+    OCR1A = 999;
+  }
 
   // Настройка Timer2
-  // Настройка предделителя и запуск таймера
-  TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21)
-          | (1 << CS20); // Prescaler 1024
-  TIMSK |= (1 << OCIE2);
-  OCR2 = 4; // 5ms for 1MHz clock
+  {
+    // Настройка предделителя и запуск таймера
+    TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21)
+            | (1 << CS20); // Prescaler 1024
+    TIMSK |= (1 << OCIE2);
+    OCR2 = 4; // 5ms for 1MHz clock
+  }
 
   // Разрешение глобальных прерываний
   ENABLE_INTERRUPTS();
@@ -484,7 +545,7 @@ get_temp(Temp_Ctx *self)
   } break;
 
   case Temp_Step_Read: {
-    if (timer_fire(&self->timer, 1000, 0, 0, true)) {
+    if (timer_expired_ext(&self->timer, 1000, 0, 0, s_ticks)) {
       if (ow_reset()) {
         u8 crc = 0;
         u8 scratchpad[8];
@@ -502,9 +563,9 @@ get_temp(Temp_Ctx *self)
           res        = true;
         }
 #if 0
-        temp = (Temp_LSB & 0x0F);
-        temp_point = temp * 625 / 1000; // Точность
-        темпер.преобразования(0.0625)
+          temp = (Temp_LSB & 0x0F);
+          temp_point = temp * 625 / 1000; // Точность
+          темпер.преобразования(0.0625)
 #endif
       }
 
@@ -522,6 +583,8 @@ get_temp(Temp_Ctx *self)
 void
 display_menu(u8 display1, u8 display2)
 {
+  static u8 display_idx = 0;
+
   if (!display_enable) {
     DDRD  = 0;
     PORTD = 0;
@@ -548,10 +611,77 @@ display_menu(u8 display1, u8 display2)
 }
 
 void
+menu_button(u8 code, i8 value)
+{
+  static Timer32 timer;
+
+  if (button_pressed(code)) {
+    menu_seconds = 0;
+    menu_idx     = CLAMP(menu_idx + value, 0, 9);
+  }
+
+  if (button_released(code)) {
+    timer_reset(&timer);
+  }
+
+  if (button_down(code)) {
+    menu_seconds = 0;
+
+    if (timer_expired_ext(&timer, 500, 0, 50, s_ticks)) {
+      menu_idx = CLAMP(menu_idx + value, 0, 9);
+    }
+  }
+}
+
+void
+menu_parameters_button(u8 code, i8 value)
+{
+  static Timer32 timer;
+
+  if (button_pressed(code)) {
+    menu_seconds = 0;
+    settings_change_params(value);
+  }
+
+  if (button_released(code)) {
+    timer_reset(&timer);
+  }
+
+  if (button_down(code)) {
+    menu_seconds = 0;
+    if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
+      settings_change_params(value);
+    }
+  }
+}
+
+void
+menu_change_temp_button(u8 code, i8 value)
+{
+  static Timer32 timer;
+
+  if (button_pressed(code)) {
+    menu_seconds        = 0;
+    setting_target_temp = CLAMP(setting_target_temp + value, 35, 80);
+    change_state(STATE_MENU_TEMP_CHANGE);
+    menu_timer_enable = 1;
+  }
+
+  if (button_released(code)) {
+    timer_reset(&timer);
+  }
+
+  if (button_down(code)) {
+    menu_seconds = 0;
+    if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
+      setting_target_temp = CLAMP(setting_target_temp + value, 35, 80);
+    }
+  }
+}
+
+void
 handle_buttons(void)
 {
-  static u32 start_time = 0;
-
   memcpy(&last_buttons, &buttons, sizeof(last_buttons));
 
   buttons[BUTTON_UP]   = PIN_BUTTON_READ & (1 << PIN_BUTTON_UP);
@@ -588,24 +718,30 @@ handle_buttons(void)
       }
     }
 
-    if (button_pressed(BUTTON_UP)) {
+    menu_change_temp_button(BUTTON_UP, 1);
+    menu_change_temp_button(BUTTON_DOWN, -1);
+  } break;
+
+  case STATE_MENU: {
+    if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
-      start_time   = time;
-      setting_target_temp
-          = setting_target_temp < 80 ? setting_target_temp + 1 : 80;
-      change_state(STATE_MENU_TEMP_CHANGE);
-      menu_timer_enable = 1;
+      change_state(STATE_MENU_PARAMETERS);
       break;
     }
-    if (button_pressed(BUTTON_DOWN)) {
+
+    menu_button(BUTTON_UP, 1);
+    menu_button(BUTTON_DOWN, -1);
+  } break;
+
+  case STATE_MENU_PARAMETERS: {
+    if (button_pressed(BUTTON_MENU)) {
       menu_seconds = 0;
-      start_time   = time;
-      setting_target_temp
-          = setting_target_temp > 35 ? setting_target_temp - 1 : 35;
-      change_state(STATE_MENU_TEMP_CHANGE);
-      menu_timer_enable = 1;
+      change_state(STATE_MENU);
       break;
     }
+
+    menu_parameters_button(BUTTON_UP, 1);
+    menu_parameters_button(BUTTON_DOWN, -1);
   } break;
 
   case STATE_MENU_TEMP_CHANGE: {
@@ -616,141 +752,8 @@ handle_buttons(void)
       break;
     }
 
-    if (button_pressed(BUTTON_UP)) {
-      menu_seconds = 0;
-      start_time   = time;
-      setting_target_temp
-          = setting_target_temp < 80 ? setting_target_temp + 1 : 80;
-      change_state(STATE_MENU_TEMP_CHANGE);
-      menu_timer_enable = 1;
-      break;
-    }
-    if (button_pressed(BUTTON_DOWN)) {
-      menu_seconds = 0;
-      start_time   = time;
-      setting_target_temp
-          = setting_target_temp > 35 ? setting_target_temp - 1 : 35;
-      change_state(STATE_MENU_TEMP_CHANGE);
-      menu_timer_enable = 1;
-      break;
-    }
-
-    if (button_down(BUTTON_UP)) {
-      menu_seconds       = 0;
-      u32 press_duration = time - start_time;
-      if (press_duration >= 800) {
-        setting_target_temp
-            = setting_target_temp < 80 ? setting_target_temp + 1 : 80;
-        _delay_ms(10);
-      }
-      break;
-    }
-    if (button_down(BUTTON_DOWN)) {
-      menu_seconds       = 0;
-      u32 press_duration = time - start_time;
-      if (press_duration >= 800) {
-        setting_target_temp
-            = setting_target_temp > 35 ? setting_target_temp - 1 : 35;
-        _delay_ms(10);
-      }
-      break;
-    }
-  } break;
-
-  case STATE_MENU: {
-    if (button_pressed(BUTTON_MENU)) {
-      menu_seconds = 0;
-      change_state(STATE_MENU_PARAMETERS);
-      break;
-    }
-
-    // BUTTON_UP
-    {
-      if (button_pressed(BUTTON_UP)) {
-        menu_seconds = 0;
-        start_time   = time;
-        menu_idx     = menu_idx < 9 ? menu_idx + 1 : 9;
-        break;
-      }
-
-      if (button_down(BUTTON_UP)) {
-        menu_seconds       = 0;
-        u32 press_duration = time - start_time;
-        if (press_duration >= 800) {
-          menu_idx = menu_idx < 9 ? menu_idx + 1 : 9;
-          _delay_ms(50);
-        }
-        break;
-      }
-    }
-
-    // BUTTON_DOWN
-    {
-      if (button_pressed(BUTTON_DOWN)) {
-        menu_seconds = 0;
-        start_time   = time;
-        menu_idx     = menu_idx > 0 ? menu_idx - 1 : 0;
-        break;
-      }
-
-      if (button_down(BUTTON_DOWN)) {
-        menu_seconds       = 0;
-        u32 press_duration = time - start_time;
-        if (press_duration >= 800) {
-          menu_idx = menu_idx > 0 ? menu_idx - 1 : 0;
-          _delay_ms(50);
-        }
-        break;
-      }
-    }
-  } break;
-
-  case STATE_MENU_PARAMETERS: {
-    if (button_pressed(BUTTON_MENU)) {
-      menu_seconds = 0;
-      change_state(STATE_MENU);
-      break;
-    }
-
-    // BUTTON_UP
-    {
-      if (button_pressed(BUTTON_UP)) {
-        menu_seconds = 0;
-        start_time   = time;
-        settings_change_params(1);
-        break;
-      }
-
-      if (button_down(BUTTON_UP)) {
-        menu_seconds       = 0;
-        u32 press_duration = time - start_time;
-        if (press_duration >= 800) {
-          settings_change_params(1);
-          _delay_ms(10);
-        }
-        break;
-      }
-    }
-
-    // BUTTON_DOWN
-    {
-      if (button_pressed(BUTTON_DOWN)) {
-        menu_seconds = 0;
-        start_time   = time;
-        settings_change_params(-1);
-        break;
-      }
-
-      if (button_down(BUTTON_DOWN)) {
-        menu_seconds       = 0;
-        u32 press_duration = time - start_time;
-        if (press_duration >= 800) {
-          settings_change_params(-1);
-          _delay_ms(10);
-        }
-        break;
-      }
-    }
+    menu_change_temp_button(BUTTON_UP, 1);
+    menu_change_temp_button(BUTTON_DOWN, -1);
   } break;
 
   case STATE_ALARM: {
@@ -1010,60 +1013,13 @@ leds_change(Leds led, b8 enable)
   leds_list[led] = enable;
 }
 
-b8
-timer_fire(Timer32 *timer, u32 time_wait, u32 time_work, u32 time_sleep,
-           b8 loop)
-{
-  b8 res = false;
-
-  if (timer->is_fire_done && time_sleep
-      && time - timer->time_sleep <= time_sleep) {
-    return false;
-  } else {
-    timer->is_fire_done = false;
-  }
-
-  if (!timer->time_wait) {
-    timer->time_wait = time;
-  }
-
-  if (time - timer->time_wait >= time_wait) {
-    if (!timer->time_work) {
-      timer->time_work = time;
-    }
-
-    if (time - timer->time_work <= time_work) {
-      timer->time_sleep = time;
-      res               = true;
-    } else {
-      if (loop) {
-        timer->time_wait    = 0;
-        timer->time_work    = 0;
-        timer->is_fire_done = true;
-      }
-    }
-  }
-
-  return res;
-}
-
-static void
-timer_reset(Timer32 *timer)
-{
-  memset(timer, 0, sizeof(Timer32));
-}
-
 ISR(TIMER1_COMPA_vect)
 {
-  static u32 start_time = 0;
-
-  prev_time = time;
-
-  time += 1;
-  start_time += 1;
+  prev_time = s_ticks;
+  s_ticks += 1;
 
   if (menu_timer_enable) {
-    if (time / 1000 > prev_time / 1000) {
+    if (s_ticks / 1000 > prev_time / 1000) {
       menu_seconds += 1;
     }
 
