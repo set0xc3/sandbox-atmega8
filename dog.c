@@ -3,20 +3,36 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-typedef unsigned char      u8;
-typedef unsigned short     u16;
-typedef unsigned int       u32;
-typedef unsigned long long u64;
+typedef uint8_t  u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
 
-typedef signed char      i8;
-typedef signed short     i16;
-typedef signed int       i32;
-typedef signed long long i64;
+typedef int8_t  i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
 
 typedef float  f32;
 typedef double f64;
 
-typedef i8 b8;
+static inline void
+gpio_set_mode_output(volatile uint8_t *port, uint8_t pin)
+{
+  *port |= (1 << pin);
+}
+
+static inline void
+gpio_write_low(volatile uint8_t *port, uint8_t pin)
+{
+  *port &= ~(1 << pin);
+}
+
+static inline void
+gpio_write_height(volatile uint8_t *port, uint8_t pin)
+{
+  *port |= (1 << pin);
+}
 
 #define PIN_MODE_INPUT(port, pin)                                             \
   ((port) &= ~(1 << (pin))) // Макрос для установки пина как вход
@@ -167,24 +183,29 @@ typedef struct Temp_Ctx {
   Timer32   timer;
 } Temp_Ctx;
 
+typedef struct Option {
+  u8 value, min, max;
+} Option;
+
 // Структура для хранения параметров меню
 typedef union Settings {
   struct {
-    u8 fan_work_duration;  // CP - ПРОДУВКА РАБОТА
-    u8 fan_pause_duration; // PP - ПРОДУВКА ПЕРЕРЫВ
-    u8 fan_speed; // Ob - СКОРОСТЬ ОБОРОТОВ ВЕНТИЛЯТОРА
-    u8 fan_power_during_ventilation; // OP - ОБОРОТЫ ВЕНТИЛЯТОРА ВО ВРЕМЯ
-                                     // ПРОДУВКИ
-    u8 pump_connection_temperature; // ТЕМПЕРАТУРА ПОДКЛЮЧЕНИЯ НАСОСА ЦО
-    u8 hysteresis;          // HI - ГИСТЕРЕЗИС
-    u8 fan_power_reduction; // tO – УМЕНЬШЕНИЕ СИЛЫ ПРОДУВКИ
-    u8 controller_shutdown_temperature; // tU – ТЕМПЕРАТУРА ОТКЛЮЧЕНИЯ
-                                        // КОНТРОЛЛЕРА
-    u8 sound_signal_enabled; // bU – ВКЛЮЧЕНИЕ И ОТКЛЮЧЕНИЕ ЗВУКОВОГО СИГНАЛА
-    u8 factory_settings;     // Uf – ЗАВОДСКИЕ НАСТРОЙКИ
-  } p;
+    Option fan_work_duration;  // CP - ПРОДУВКА РАБОТА
+    Option fan_pause_duration; // PP - ПРОДУВКА ПЕРЕРЫВ
+    Option fan_speed; // Ob - СКОРОСТЬ ОБОРОТОВ ВЕНТИЛЯТОРА
+    Option fan_power_during_ventilation; // OP - ОБОРОТЫ ВЕНТИЛЯТОРА ВО ВРЕМЯ
+                                         // ПРОДУВКИ
+    Option pump_connection_temperature; // ТЕМПЕРАТУРА ПОДКЛЮЧЕНИЯ НАСОСА ЦО
+    Option hysteresis;          // HI - ГИСТЕРЕЗИС
+    Option fan_power_reduction; // tO – УМЕНЬШЕНИЕ СИЛЫ ПРОДУВКИ
+    Option controller_shutdown_temperature; // tU – ТЕМПЕРАТУРА ОТКЛЮЧЕНИЯ
+                                            // КОНТРОЛЛЕРА
+    Option
+        sound_signal_enabled; // bU – ВКЛЮЧЕНИЕ И ОТКЛЮЧЕНИЕ ЗВУКОВОГО СИГНАЛА
+    Option factory_settings;  // Uf – ЗАВОДСКИЕ НАСТРОЙКИ
+  };
 
-  u8 e[10];
+  Option e[10];
 } Settings; // 10-bytes
 
 // Глобальные переменные
@@ -198,7 +219,7 @@ static Error    error_flags = Error_None;
 static Mode     mode        = MODE_STOP;
 static State    last_state, state = STATE_HOME;
 static Settings settings;
-static u8       setting_target_temp = 0;
+static Option   setting_target_temp;
 
 // Temp
 static Temp_Ctx temp_ctx;
@@ -211,7 +232,7 @@ static u32 prev_time = 0;
 // Прототипы функций
 static void init_io(void);
 static void init_timers(void);
-static b8   get_temp(Temp_Ctx *self);
+static bool get_temp(Temp_Ctx *self);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
 static void startup_alarm(void);
@@ -241,7 +262,7 @@ static u8   ow_read(void);
 static u8   ow_read_bit(void);
 static void ow_send_bit(u8 bit);
 static void ow_send(u8 data);
-static b8   ow_skip(void);
+static bool ow_skip(void);
 static u8   ow_crc_update(u8 crc, u8 byte);
 
 #define LEDS_MAX 6
@@ -255,11 +276,11 @@ typedef enum Leds {
   Leds_Fan      = PIN_LED_FAN
 } Leds;
 
-static b8 leds_list[LEDS_MAX];
+static bool leds_list[LEDS_MAX];
 
 static void leds_init(void);
 static void leds_display(Leds led);
-static void leds_change(Leds led, b8 enable);
+static void leds_change(Leds led, bool enable);
 static void leds_off(void);
 
 static Timer32 timer_work_fun;
@@ -380,7 +401,7 @@ main(void)
       }
 
       if (state == STATE_HOME) {
-        if (settings.p.factory_settings == 1) {
+        if (settings.factory_settings.value == 1) {
           settings_reset();
         }
       }
@@ -399,7 +420,7 @@ main(void)
           error_flags = Error_High_Temperature;
           startup_alarm();
         } else if (temp_ctx.temp
-                   < settings.p.controller_shutdown_temperature) {
+                   < settings.controller_shutdown_temperature.value) {
           static u32 fires = 0;
 
           if (timer_expired_ext(&timer_controller_shutdown_temperature, 60000,
@@ -433,24 +454,26 @@ main(void)
           fan_enable();
         } else {
           // Вентилятор начнет работу в автоматическом режиме.
-          if (temp_ctx.temp >= setting_target_temp + settings.p.hysteresis) {
+          if (temp_ctx.temp
+              >= setting_target_temp.value + settings.hysteresis.value) {
             mode = MODE_CONTROL;
             fan_disable();
             leds_change(Leds_Control, true);
             leds_change(Leds_Rastopka, false);
 
             timer_reset(&timer_work_fun);
-          } else if (temp_ctx.temp
-                     <= setting_target_temp - settings.p.hysteresis) {
+          } else if (temp_ctx.temp <= setting_target_temp.value
+                                          - settings.hysteresis.value) {
             mode = MODE_RASTOPKA;
             leds_change(Leds_Rastopka, true);
             leds_change(Leds_Control, false);
           }
 
           if (mode == MODE_RASTOPKA) {
-            if (timer_expired_ext(
-                    &timer_work_fun, 0, settings.p.fan_work_duration * 1000,
-                    settings.p.fan_pause_duration * 1000, s_ticks)) {
+            if (timer_expired_ext(&timer_work_fun, 0,
+                                  settings.fan_work_duration.value * 1000,
+                                  settings.fan_pause_duration.value * 1000,
+                                  s_ticks)) {
               fan_enable();
             } else {
               fan_disable();
@@ -458,7 +481,7 @@ main(void)
           }
         }
 
-        if (temp_ctx.temp >= settings.p.pump_connection_temperature) {
+        if (temp_ctx.temp >= settings.pump_connection_temperature.value) {
           leds_change(Leds_Pump, true);
         } else {
           leds_change(Leds_Pump, false);
@@ -524,10 +547,10 @@ init_timers(void)
   ENABLE_INTERRUPTS();
 }
 
-b8
+bool
 get_temp(Temp_Ctx *self)
 {
-  b8 res = false;
+  bool res = false;
 
   self->last_temp = self->temp;
 
@@ -553,7 +576,8 @@ get_temp(Temp_Ctx *self)
         ow_send(0xCC); // Проверка кода датчика
         ow_send(0xBE); // Считываем содержимое ОЗУ
 
-        for (u8 i = 0; i < 8; i++) {
+        u8 i = 0;
+        for (i = 0; i < 8; i++) {
           u8 b          = ow_read();
           scratchpad[i] = b;
           crc           = ow_crc_update(crc, b);
@@ -661,8 +685,10 @@ menu_change_temp_button(u8 code, i8 value)
   static Timer32 timer;
 
   if (button_pressed(code)) {
-    menu_seconds        = 0;
-    setting_target_temp = CLAMP(setting_target_temp + value, 35, 80);
+    menu_seconds = 0;
+    setting_target_temp.value
+        = CLAMP(setting_target_temp.value + value, setting_target_temp.min,
+                setting_target_temp.max);
     change_state(STATE_MENU_TEMP_CHANGE);
     menu_timer_enable = 1;
   }
@@ -674,7 +700,9 @@ menu_change_temp_button(u8 code, i8 value)
   if (button_down(code)) {
     menu_seconds = 0;
     if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
-      setting_target_temp = CLAMP(setting_target_temp + value, 35, 80);
+      setting_target_temp.value
+          = CLAMP(setting_target_temp.value + value, setting_target_temp.min,
+                  setting_target_temp.max);
     }
   }
 }
@@ -795,57 +823,25 @@ startup_alarm(void)
 void
 settings_reset(void)
 {
-  settings.p.fan_work_duration               = 10; // 5-95 seconds
-  settings.p.fan_pause_duration              = 3;  // 1-99 minutes
-  settings.p.fan_speed                       = 99; // 30-99
-  settings.p.fan_power_during_ventilation    = 90; // 30-99
-  settings.p.pump_connection_temperature     = 40; // 25-70
-  settings.p.hysteresis                      = 3;  // 1-9
-  settings.p.fan_power_reduction             = 5;  // 0-10
-  settings.p.controller_shutdown_temperature = 30; // 25-50
-  settings.p.sound_signal_enabled            = 1;  // 0-1
-  settings.p.factory_settings                = 0;  // 0-1
-  setting_target_temp                        = 60;
+  settings.fan_work_duration  = (Option){ 10, 5, 95 };  // 5-95 seconds
+  settings.fan_pause_duration = (Option){ 3, 1, 99 };   // 1-99 minutes
+  settings.fan_speed          = (Option){ 99, 30, 99 }; // 30-99
+  settings.fan_power_during_ventilation    = (Option){ 90, 30, 99 }; // 30-99
+  settings.pump_connection_temperature     = (Option){ 40, 25, 70 }; // 25-70
+  settings.hysteresis                      = (Option){ 3, 1, 9 };    // 1-9
+  settings.fan_power_reduction             = (Option){ 5, 0, 10 };   // 0-10
+  settings.controller_shutdown_temperature = (Option){ 30, 25, 50 }; // 25-50
+  settings.sound_signal_enabled            = (Option){ 1, 0, 1 };    // 0-1
+  settings.factory_settings                = (Option){ 0, 0, 1 };    // 0-1
+  setting_target_temp                      = (Option){ 60, 35, 80 };
 }
 
 void
 settings_change_params(i8 value)
 {
-  switch (menu_idx) {
-  case CP:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 5, 95);
-    break;
-  case PP:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 1, 99);
-    break;
-  case OB:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 30, 99);
-    break;
-  case OP:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 30, 99);
-    break;
-  case TP:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 25, 70);
-    break;
-  case HI:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 1, 9);
-    break;
-  case TO:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 10);
-    break;
-  case TU:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 25, 50);
-    break;
-  case BU:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 1);
-    break;
-  case UF:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 1);
-    break;
-  default:
-    settings.e[menu_idx] = CLAMP(settings.e[menu_idx] + value, 0, 99);
-    break;
-  }
+  settings.e[menu_idx].value
+      = CLAMP(settings.e[menu_idx].value + value, settings.e[menu_idx].min,
+              settings.e[menu_idx].max);
 }
 
 u8
@@ -870,7 +866,7 @@ button_down(u8 code)
 u8
 ow_reset(void)
 {
-  b8 res = false;
+  bool res = false;
 
   res = ow_skip();
   if (res) {
@@ -909,8 +905,9 @@ u8
 ow_read(void)
 {
   u8 r = 0;
+  u8 p = 0;
 
-  for (u8 p = 8; p; p--) {
+  for (p = 8; p; p--) {
     r >>= 1;
     if (ow_read_bit()) {
       r |= 0x80;
@@ -942,13 +939,15 @@ ow_send_bit(u8 bit)
 void
 ow_send(u8 byte)
 {
-  for (u8 p = 8; p; p--) {
+  u8 p = 0;
+
+  for (p = 8; p; p--) {
     ow_send_bit(byte & 1);
     byte >>= 1;
   }
 }
 
-b8
+bool
 ow_skip(void)
 {
   u8 retries = 80;
@@ -972,7 +971,9 @@ ow_skip(void)
 u8
 ow_crc_update(u8 crc, u8 byte)
 {
-  for (u8 p = 8; p; p--) {
+  u8 p = 0;
+
+  for (p = 8; p; p--) {
     crc = ((crc ^ byte) & 1) ? (crc >> 1) ^ 0b10001100 : (crc >> 1);
     byte >>= 1;
   }
@@ -1008,7 +1009,7 @@ leds_off(void)
 }
 
 void
-leds_change(Leds led, b8 enable)
+leds_change(Leds led, bool enable)
 {
   leds_list[led] = enable;
 }
@@ -1057,16 +1058,17 @@ ISR(TIMER2_COMP_vect)
     }
     break;
   case STATE_MENU_TEMP_CHANGE:
-    display_menu(display_segment_numbers[setting_target_temp % 100 / 10],
-                 display_segment_numbers[setting_target_temp % 10]);
+    display_menu(display_segment_numbers[setting_target_temp.value % 100 / 10],
+                 display_segment_numbers[setting_target_temp.value % 10]);
     break;
   case STATE_MENU:
     display_menu(display_segment_menu[menu_idx][0],
                  display_segment_menu[menu_idx][1]);
     break;
   case STATE_MENU_PARAMETERS:
-    display_menu(display_segment_numbers[settings.e[menu_idx] % 100 / 10],
-                 display_segment_numbers[settings.e[menu_idx] % 10]);
+    display_menu(
+        display_segment_numbers[settings.e[menu_idx].value % 100 / 10],
+        display_segment_numbers[settings.e[menu_idx].value % 10]);
     break;
   default:
     break;
