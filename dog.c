@@ -416,7 +416,7 @@ system_tick_init(void)
     // every 1ms is 1024.
 
     // Set prescaler to 1024
-    TCCR0 |= (1 << CS01) | (1 << CS00);
+    TCCR0 |= (1 << CS01);
 
     // Enable overflow interrupt
     TIMSK |= (1 << TOIE0);
@@ -431,7 +431,7 @@ system_tick_init(void)
     TCCR1B |= (1 << WGM12) | (1 << CS11); // Предделитель = 8
 
     // Установка начального значения для регистра сравнения (скважность)
-    OCR1A = 128; // Например, 50% скважность
+    OCR1A = 255;
 
     gpio_set_mode_output(&DDRB, PB1);
 #endif
@@ -455,27 +455,41 @@ fan_enable(void)
   leds_change(Leds_Control, false);
   leds_change(Leds_Rastopka, true);
   leds_change(Leds_Fan, true);
-  gpio_set_mode_output(&PIN_FAN_DDR, PIN_FAN);
-  gpio_write_height(&PIN_FAN_PORT, PIN_FAN);
+
+  // Включение ШИМ
+  TCCR1A |= (1 << COM1A1);
 }
 
 static inline void
 fan_disable(void)
 {
-  gpio_set_mode_output(&PIN_FAN_DDR, PIN_FAN);
-  gpio_write_low(&PIN_FAN_PORT, PIN_FAN);
   leds_change(Leds_Fan, false);
+
+  // Выключение ШИМ
+  TCCR1A &= ~(1 << COM1A1);
 }
 
 int
 main(void)
 {
-  // options_load();
+#if 0
+  uint16_t i;
+  for (i = 0; i < 512; i++) {
+    eeprom_write_byte((uint8_t *)i, 0);
+  }
+
   options_default();
+  options_save();
+
+  return 0;
+#endif
   system_tick_init();
 
   init_io();
   leds_init();
+
+  options_default();
+  options_load();
 
   do {
     if (!ow_reset()) {
@@ -509,7 +523,15 @@ main(void)
       }
 
       timer_reset(&timer_out_menu);
+
+      display_enable = false;
       options_save();
+      display_enable = true;
+
+      // PWM
+      {
+        OCR1A = (options.fan_speed.value - 0) * (255 - 0) / (99 - 0) + 0;
+      }
 
       timer_out_menu_enabled = false;
     }
@@ -536,7 +558,9 @@ main(void)
       if (state == STATE_HOME) {
         if (options.factory_settings.value == 1) {
           options_default();
+          display_enable = false;
           options_save();
+          display_enable = true;
         }
       }
 
@@ -1000,7 +1024,6 @@ options_save(void)
 
   eeprom_write_block((const void *)&option_temp_target, (void *)eeprom_pos,
                      sizeof(Option));
-  eeprom_pos += sizeof(Option);
 
   interrupts_enable();
 }
@@ -1025,7 +1048,11 @@ options_load(void)
 
     eeprom_read_block((void *)&option_temp_target, (void *)eeprom_pos,
                       sizeof(Option));
-    eeprom_pos += sizeof(Option);
+
+    OCR1A = (options.fan_speed.value - 0) * (255 - 0) / (99 - 0) + 0;
+  } else {
+    options_default();
+    options_save();
   }
   interrupts_enable();
 }
