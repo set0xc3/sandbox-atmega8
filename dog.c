@@ -20,6 +20,7 @@ typedef double f64;
 
 #define F_CPU 1000000UL
 
+#include <avr/eeprom.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <string.h>
@@ -175,12 +176,12 @@ timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
 #define CLAMP_TOP(value, max) ((value >= max) ? max : value)
 
 // Пины для кнопок
-#define PIN_BUTTON_UP   PD5
-#define PIN_BUTTON_MENU PD6
-#define PIN_BUTTON_DOWN PD7
-#define PIN_BUTTON_READ PIND
-#define PIN_BUTTON_DDR  DDRD
-#define PIN_BUTTON_PORT PORTD
+#define PIN_BUTTON_DOWN PB5
+#define PIN_BUTTON_MENU PB6
+#define PIN_BUTTON_UP   PB7
+#define PIN_BUTTON_READ PINB
+#define PIN_BUTTON_DDR  DDRB
+#define PIN_BUTTON_PORT PORTB
 
 // Пины для индикации
 #define PIN_LED_STOP     PC0
@@ -193,15 +194,15 @@ timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
 #define PIN_LED_PORT     PORTC
 
 // Пины для термодатчика
-#define PIN_OW      PD2
-#define PIN_OW_READ PIND
-#define PIN_OW_DDR  DDRD
-#define PIN_OW_PORT PORTD
+#define PIN_OW      PB0
+#define PIN_OW_READ PINB
+#define PIN_OW_DDR  DDRB
+#define PIN_OW_PORT PORTB
 
 // Пины для вентилятора
-#define PIN_FAN      PD3
-#define PIN_FAN_DDR  DDRD
-#define PIN_FAN_PORT PORTD
+#define PIN_FAN      PB3
+#define PIN_FAN_DDR  DDRB
+#define PIN_FAN_PORT PORTB
 
 // Массив значениий для семисегментного индикатора
 static char display_segment_numbers[12] = {
@@ -314,11 +315,10 @@ typedef union Options {
 } Options; // 10-bytes
 
 // Глобальные переменные
-static u8 display_enable = 1;
+static bool display_enable = true;
 
-static u8 menu_idx          = CP;
-static u8 menu_seconds      = 0; // 2 сек. до входа в меню
-static u8 menu_timer_enable = 0;
+static u8   menu_idx               = CP;
+static bool timer_out_menu_enabled = 0;
 
 static Error   error_flags = Error_None;
 static Mode    mode        = MODE_STOP;
@@ -331,8 +331,6 @@ static Temp_Ctx temp_ctx;
 
 static u8 buttons[BUTTON_COUNT];
 static u8 last_buttons[BUTTON_COUNT];
-
-static u32 prev_time = 0;
 
 // Прототипы функций
 static void init_io(void);
@@ -354,8 +352,10 @@ restore_last_state(void)
   state = last_state;
 }
 
-static void options_reset(void);
+static void options_default(void);
 static void options_change_params(i8 value);
+static void options_save(void);
+static void options_load(void);
 
 static u8 button_pressed(u8 code);
 static u8 button_released(u8 code);
@@ -393,6 +393,8 @@ static Timer32 timer_controller_shutdown_temperature;
 static Timer32 timer_menu;
 static Timer32 timer_temp_alarm;
 static Timer32 timer_ow_alarm;
+static Timer32 timer_in_menu;
+static Timer32 timer_out_menu;
 
 static inline void menu_button(u8 code, i8 value);
 static inline void menu_parameters_button(u8 code, i8 value);
@@ -403,32 +405,43 @@ static inline void menu_change_temp_button(u8 code, i8 value);
 static inline void
 system_tick_init(void)
 {
-  // Настройка Timer1
+  // Настройка таймера 0 для глобального таймера с периодом прерывания в 1 мс
   {
-    // устанавливаем режим СТС (сброс по совпадению)
-    TCCR1B |= (1 << WGM12);
+    // Set prescaler to 1024
+    // Timer Overflow Period = Prescaler Value * (1 / CPU Frequency)
+    // Prescaler Value = Timer Overflow Period * CPU Frequency
+    // Since Timer0 is an 8-bit timer and has prescaler options of 1, 8, 64,
+    // 256, or 1024, the closest prescaler value that makes the timer overflow
+    // every 1ms is 1024.
 
-    // Установка предделителя 8
-    TCCR1B |= (1 << CS10);
+    // Set prescaler to 1024
+    TCCR0 |= (1 << CS01) | (1 << CS00);
 
-    // Разрешение прерывания по сравнению
-    TIMSK |= (1 << OCIE1A);
-
-    // Установка значение для сравнения (1 мс для тактовой частоты 1 МГц и
-    // предделителя 1)
-    OCR1A = 999;
+    // Enable overflow interrupt
+    TIMSK |= (1 << TOIE0);
   }
 
-  // Настройка Timer2
+  // Настройка таймера 1 для ШИМ
+  {
+    // Настройка таймера 1 в режиме Fast PWM, TOP = 0xFF
+    TCCR1A |= (1 << COM1A1) | (1 << WGM10);
+    TCCR1B |= (1 << WGM12) | (1 << CS11); // Предделитель = 8
+
+    // Установка начального значения для регистра сравнения (скважность)
+    OCR1A = 128; // Например, 50% скважность
+
+    gpio_set_mode_output(&DDRB, PB1);
+  }
+
+  // Настройка таймера 2 для глобального таймера с периодом прерывания в 1 мс
   {
     // Настройка предделителя и запуск таймера
     TCCR2 = (1 << WGM21) | (1 << CS22) | (1 << CS21)
             | (1 << CS20); // Prescaler 1024
     TIMSK |= (1 << OCIE2);
-    OCR2 = 4; // 5ms for 1MHz clock
+    OCR2 = 0; // 1ms for 1MHz clock
   }
 
-  // Разрешение глобальных прерываний
   interrupts_enable();
 }
 
@@ -453,10 +466,11 @@ fan_disable(void)
 int
 main(void)
 {
-  options_reset();
+  options_load();
+
+  system_tick_init();
 
   init_io();
-  system_tick_init();
   leds_init();
 
   do {
@@ -466,19 +480,40 @@ main(void)
     }
   } while (timer_expired_ext(&timer_ow_alarm, 0, SECONDS(1), 0, s_ticks));
 
+  timer_reset(&timer_ow_alarm);
+
   while (true) {
     _delay_ms(1);
 
+    if (!ow_reset()) {
+      if (timer_expired_ext(&timer_ow_alarm, SECONDS(5), 0, 0, s_ticks)) {
+        if (!ow_reset()) {
+          error_flags = Error_Temp_Sensor;
+          startup_alarm();
+        }
+        timer_reset(&timer_ow_alarm);
+      }
+    }
+
     handle_buttons();
 
-    if (ow_reset()) {
-      timer_reset(&timer_ow_alarm);
-      get_temp(&temp_ctx);
-    } else {
-      if (timer_expired_ext(&timer_ow_alarm, SECONDS(10), 0, 0, s_ticks)) {
-        error_flags = Error_Temp_Sensor;
-        startup_alarm();
+    if (timer_out_menu_enabled
+        && timer_expired_ext(&timer_out_menu, SECONDS(5), 0, 0, s_ticks)
+        && state != STATE_HOME) {
+      change_state(STATE_HOME);
+      if (last_state == STATE_MENU_TEMP_CHANGE
+          || last_state == STATE_MENU_PARAMETERS || last_state == STATE_MENU) {
+        last_state = STATE_HOME;
       }
+
+      timer_reset(&timer_out_menu);
+      options_save();
+
+      timer_out_menu_enabled = false;
+    }
+
+    if (ow_reset()) {
+      get_temp(&temp_ctx);
     }
 
     if (state == STATE_ALARM) {
@@ -498,11 +533,14 @@ main(void)
 
       if (state == STATE_HOME) {
         if (options.factory_settings.value == 1) {
-          options_reset();
+          options_default();
+          options_save();
         }
       }
 
       if (mode != MODE_STOP) {
+        leds_change(Leds_Stop, false);
+
         if (temp_ctx.temp > 90) {
           if (timer_expired_ext(&timer_temp_alarm, SECONDS(5), 0, 0,
                                 s_ticks)) {
@@ -603,16 +641,26 @@ main(void)
 void
 init_io(void)
 {
-  // Настройка пинов для кнопок
-  PIN_BUTTON_DDR &= ~(1 << PIN_BUTTON_MENU) | (1 << PIN_BUTTON_UP)
-                    | (1 << PIN_BUTTON_DOWN);
-  // PORTD |= (1 << PIN_BUTTON_MENU) | (1 << PIN_BUTTON_UP) | (1 <<
-  // PIN_BUTTON_DOWN);
+  gpio_set_mode_input(&PIN_BUTTON_DDR, PIN_BUTTON_DOWN);
+  gpio_set_mode_input(&PIN_BUTTON_DDR, PIN_BUTTON_MENU);
+  gpio_set_mode_input(&PIN_BUTTON_DDR, PIN_BUTTON_UP);
 
-  // Настройка пинов для индикации
-  PIN_LED_DDR |= (1 << PIN_LED_STOP) | (1 << PIN_LED_RASTOPKA)
-                 | (1 << PIN_LED_CONTROL) | (1 << PIN_LED_ALARM)
-                 | (1 << PIN_LED_PUMP) | (1 << PIN_LED_FAN);
+  gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_STOP);
+  gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_RASTOPKA);
+  gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_CONTROL);
+  gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_ALARM);
+  gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_PUMP);
+  gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_FAN);
+
+  gpio_set_mode_output(&DDRB, PB2);
+  gpio_set_mode_output(&DDRD, PD0);
+  gpio_set_mode_output(&DDRD, PD1);
+  gpio_set_mode_output(&DDRD, PD2);
+  gpio_set_mode_output(&DDRD, PD3);
+  gpio_set_mode_output(&DDRD, PD4);
+  gpio_set_mode_output(&DDRD, PD5);
+  gpio_set_mode_output(&DDRD, PD6);
+  gpio_set_mode_output(&DDRD, PD7);
 }
 
 bool
@@ -678,25 +726,18 @@ display_menu(u8 display1, u8 display2)
   static u8 display_idx = 0;
 
   if (!display_enable) {
-    gpio_write_low(&PORTD, PD0);
-    gpio_write_low(&PORTD, PD1);
+    gpio_write_low(&PORTB, PB2);
     return;
   }
 
-  gpio_set_mode_output(&DDRD, PD0);
-  gpio_set_mode_output(&DDRD, PD1);
-  DDRB = 0xFF;
-
   switch (display_idx) {
   case 0:
-    gpio_write_height(&PORTD, PD0);
-    gpio_write_low(&PORTD, PD1);
-    PORTB = ~(display1);
+    gpio_write_height(&PORTB, PB2);
+    PORTD = ~(display1);
     break;
   case 1:
-    gpio_write_low(&PORTD, PD0);
-    gpio_write_height(&PORTD, PD1);
-    PORTB = ~(display2);
+    gpio_write_low(&PORTB, PB2);
+    PORTD = ~(display2);
     break;
   default:
     break;
@@ -711,7 +752,7 @@ menu_button(u8 code, i8 value)
   static Timer32 timer;
 
   if (button_pressed(code)) {
-    menu_seconds = 0;
+    timer_reset(&timer_out_menu);
     menu_idx
         = CLAMP(menu_idx + value == UINT8_MAX ? 0 : menu_idx + value, 0, 9);
   }
@@ -721,7 +762,7 @@ menu_button(u8 code, i8 value)
   }
 
   if (button_down(code)) {
-    menu_seconds = 0;
+    timer_reset(&timer_out_menu);
 
     if (timer_expired_ext(&timer, 500, 0, 50, s_ticks)) {
       menu_idx
@@ -736,7 +777,7 @@ menu_parameters_button(u8 code, i8 value)
   static Timer32 timer;
 
   if (button_pressed(code)) {
-    menu_seconds = 0;
+    timer_reset(&timer_out_menu);
     options_change_params(value);
   }
 
@@ -745,7 +786,7 @@ menu_parameters_button(u8 code, i8 value)
   }
 
   if (button_down(code)) {
-    menu_seconds = 0;
+    timer_reset(&timer_out_menu);
     if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
       options_change_params(value);
     }
@@ -758,14 +799,14 @@ menu_change_temp_button(u8 code, i8 value)
   static Timer32 timer;
 
   if (button_pressed(code)) {
-    menu_seconds = 0;
+    timer_reset(&timer_out_menu);
     option_temp_target.value
         = CLAMP(option_temp_target.value + value == UINT8_MAX
                     ? 0
                     : option_temp_target.value + value,
                 option_temp_target.min, option_temp_target.max);
     change_state(STATE_MENU_TEMP_CHANGE);
-    menu_timer_enable = 1;
+    timer_out_menu_enabled = 1;
   }
 
   if (button_released(code)) {
@@ -773,7 +814,7 @@ menu_change_temp_button(u8 code, i8 value)
   }
 
   if (button_down(code)) {
-    menu_seconds = 0;
+    timer_reset(&timer_out_menu);
     if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
       option_temp_target.value
           = CLAMP(option_temp_target.value + value == UINT8_MAX
@@ -796,13 +837,15 @@ handle_buttons(void)
   switch (state) {
   case STATE_HOME: {
     if (button_pressed(BUTTON_MENU)) {
-      menu_timer_enable = 1;
+      timer_out_menu_enabled = 1;
       leds_off();
     } else if (button_released(BUTTON_MENU)) {
-      menu_timer_enable = 0;
+      timer_out_menu_enabled = 0;
+
+      timer_reset(&timer_in_menu);
 
       if (state != STATE_MENU) {
-        menu_seconds = 0;
+        timer_reset(&timer_out_menu);
       }
 
       if (last_state == STATE_HOME || last_state == STATE_ALARM) {
@@ -824,13 +867,20 @@ handle_buttons(void)
       }
     }
 
+    if (button_down(BUTTON_MENU)) {
+      if (timer_expired_ext(&timer_in_menu, SECONDS(2), 0, 0, s_ticks)) {
+        change_state(STATE_MENU);
+        timer_reset(&timer_in_menu);
+      }
+    }
+
     menu_change_temp_button(BUTTON_UP, 1);
     menu_change_temp_button(BUTTON_DOWN, -1);
   } break;
 
   case STATE_MENU: {
     if (button_pressed(BUTTON_MENU)) {
-      menu_seconds = 0;
+      timer_reset(&timer_out_menu);
       change_state(STATE_MENU_PARAMETERS);
       break;
     }
@@ -841,7 +891,7 @@ handle_buttons(void)
 
   case STATE_MENU_PARAMETERS: {
     if (button_pressed(BUTTON_MENU)) {
-      menu_seconds = 0;
+      timer_reset(&timer_out_menu);
       change_state(STATE_MENU);
       break;
     }
@@ -852,9 +902,10 @@ handle_buttons(void)
 
   case STATE_MENU_TEMP_CHANGE: {
     if (button_pressed(BUTTON_MENU)) {
-      menu_timer_enable = 0;
-      menu_seconds      = 0;
+      timer_out_menu_enabled = 0;
+      timer_reset(&timer_out_menu);
       change_state(STATE_HOME);
+      options_save();
       break;
     }
 
@@ -891,13 +942,13 @@ startup_alarm(void)
   timer_reset(&timer_menu);
   timer_reset(&timer_temp_alarm);
   timer_reset(&timer_ow_alarm);
-  menu_timer_enable = 0;
-  menu_seconds      = 0;
-  display_enable    = 1;
+  timer_reset(&timer_out_menu);
+  timer_out_menu_enabled = false;
+  display_enable         = true;
 }
 
 void
-options_reset(void)
+options_default(void)
 {
   options.fan_work_duration            = (Option){ 10, 5, 95 }; // 5-95 seconds
   options.fan_pause_duration           = (Option){ 3, 1, 99 };  // 1-99 minutes
@@ -920,6 +971,56 @@ options_change_params(i8 value)
                   ? 0
                   : options.e[menu_idx].value + value,
               options.e[menu_idx].min, options.e[menu_idx].max);
+}
+
+void
+options_save(void)
+{
+  uint16_t eeprom_pos = sizeof(uint8_t);
+
+  interrupts_disable();
+
+  // uint16_t i;
+  // for (i = 0; i < 512; i++) {
+  //   eeprom_write_byte((uint8_t *)i, 0);
+  // }
+
+  eeprom_write_byte((uint8_t *)0x0, 1);
+
+  eeprom_write_block((const void *)&options, (void *)eeprom_pos,
+                     sizeof(Options));
+  eeprom_pos += sizeof(Options);
+
+  eeprom_write_block((const void *)&option_temp_target, (void *)eeprom_pos,
+                     sizeof(Option));
+  eeprom_pos += sizeof(Option);
+
+  interrupts_enable();
+}
+
+void
+options_load(void)
+{
+  // uint16_t i;
+  // for (i = 0; i < 512; i++) {
+  //   eeprom_write_byte((uint8_t *)i, 0);
+  // }
+
+  // return;
+
+  interrupts_disable();
+
+  uint16_t eeprom_pos = sizeof(uint8_t);
+
+  if (eeprom_read_byte((uint8_t *)0x0) == 1) {
+    eeprom_read_block((void *)&options, (void *)eeprom_pos, sizeof(Options));
+    eeprom_pos += sizeof(Options);
+
+    eeprom_read_block((void *)&option_temp_target, (void *)eeprom_pos,
+                      sizeof(Option));
+    eeprom_pos += sizeof(Option);
+  }
+  interrupts_enable();
 }
 
 u8
@@ -1092,35 +1193,7 @@ leds_change(Leds led, bool enable)
   leds_list[led] = enable;
 }
 
-ISR(TIMER1_COMPA_vect)
-{
-  prev_time = s_ticks;
-  s_ticks += 1;
-
-  if (menu_timer_enable) {
-    if (s_ticks / 1000 > prev_time / 1000) {
-      menu_seconds += 1;
-    }
-
-    if (menu_seconds >= 2 && state == STATE_HOME) {
-      change_state(STATE_MENU);
-    }
-
-    if (menu_seconds >= 5 && state != STATE_HOME) {
-      change_state(STATE_HOME);
-      if (last_state == STATE_MENU_TEMP_CHANGE
-          || last_state == STATE_MENU_PARAMETERS || last_state == STATE_MENU) {
-        last_state = STATE_HOME;
-      }
-      menu_timer_enable = 0;
-      menu_seconds      = 0;
-    }
-  } else {
-    menu_seconds = 0;
-  }
-}
-
-ISR(TIMER2_COMP_vect)
+ISR(TIMER0_OVF_vect)
 {
   switch (state) {
   case STATE_HOME:
@@ -1149,5 +1222,14 @@ ISR(TIMER2_COMP_vect)
     break;
   default:
     break;
+  }
+}
+
+ISR(TIMER2_COMP_vect)
+{
+  s_ticks += 1;
+
+  static Timer32 timer;
+  if (timer_expired_ext(&timer, 0, 0, 5, s_ticks)) {
   }
 }
