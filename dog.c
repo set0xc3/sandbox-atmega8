@@ -200,7 +200,7 @@ timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
 #define PIN_OW_PORT PORTB
 
 // Пины для вентилятора
-#define PIN_FAN      PB3
+#define PIN_FAN      PB1
 #define PIN_FAN_DDR  DDRB
 #define PIN_FAN_PORT PORTB
 
@@ -407,6 +407,7 @@ system_tick_init(void)
 {
   // Настройка таймера 0 для глобального таймера с периодом прерывания в 1 мс
   {
+#if 1
     // Set prescaler to 1024
     // Timer Overflow Period = Prescaler Value * (1 / CPU Frequency)
     // Prescaler Value = Timer Overflow Period * CPU Frequency
@@ -419,10 +420,12 @@ system_tick_init(void)
 
     // Enable overflow interrupt
     TIMSK |= (1 << TOIE0);
+#endif
   }
 
   // Настройка таймера 1 для ШИМ
   {
+#if 1
     // Настройка таймера 1 в режиме Fast PWM, TOP = 0xFF
     TCCR1A |= (1 << COM1A1) | (1 << WGM10);
     TCCR1B |= (1 << WGM12) | (1 << CS11); // Предделитель = 8
@@ -431,6 +434,7 @@ system_tick_init(void)
     OCR1A = 128; // Например, 50% скважность
 
     gpio_set_mode_output(&DDRB, PB1);
+#endif
   }
 
   // Настройка таймера 2 для глобального таймера с периодом прерывания в 1 мс
@@ -466,8 +470,8 @@ fan_disable(void)
 int
 main(void)
 {
-  options_load();
-
+  // options_load();
+  options_default();
   system_tick_init();
 
   init_io();
@@ -482,9 +486,7 @@ main(void)
 
   timer_reset(&timer_ow_alarm);
 
-  while (true) {
-    _delay_ms(1);
-
+  for (;;) {
     if (!ow_reset()) {
       if (timer_expired_ext(&timer_ow_alarm, SECONDS(5), 0, 0, s_ticks)) {
         if (!ow_reset()) {
@@ -653,6 +655,8 @@ init_io(void)
   gpio_set_mode_output(&PIN_LED_DDR, PIN_LED_FAN);
 
   gpio_set_mode_output(&DDRB, PB2);
+  gpio_set_mode_output(&DDRB, PB3);
+
   gpio_set_mode_output(&DDRD, PD0);
   gpio_set_mode_output(&DDRD, PD1);
   gpio_set_mode_output(&DDRD, PD2);
@@ -726,18 +730,21 @@ display_menu(u8 display1, u8 display2)
   static u8 display_idx = 0;
 
   if (!display_enable) {
+    gpio_write_low(&PORTB, PB3);
     gpio_write_low(&PORTB, PB2);
     return;
   }
 
   switch (display_idx) {
   case 0:
+    gpio_write_low(&PORTB, PB3);
     gpio_write_height(&PORTB, PB2);
-    PORTD = ~(display1);
+    PORTD = ~(display2);
     break;
   case 1:
     gpio_write_low(&PORTB, PB2);
-    PORTD = ~(display2);
+    gpio_write_height(&PORTB, PB3);
+    PORTD = ~(display1);
     break;
   default:
     break;
@@ -1225,11 +1232,4 @@ ISR(TIMER0_OVF_vect)
   }
 }
 
-ISR(TIMER2_COMP_vect)
-{
-  s_ticks += 1;
-
-  static Timer32 timer;
-  if (timer_expired_ext(&timer, 0, 0, 5, s_ticks)) {
-  }
-}
+ISR(TIMER2_COMP_vect) { s_ticks += 1; }
