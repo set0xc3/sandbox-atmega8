@@ -959,7 +959,12 @@ handle_buttons(void)
       timer_out_menu_enabled = false;
       timer_reset(&timer_out_menu);
       change_state(STATE_HOME);
+      
+      display_enable = false;
+      gpio_write_low(&PORTB, PB3);
+      gpio_write_low(&PORTB, PB2);
       options_save();
+      display_enable = true;
       break;
     }
 
