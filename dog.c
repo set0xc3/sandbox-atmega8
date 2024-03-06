@@ -318,7 +318,7 @@ typedef union Options {
 static bool display_enable = true;
 
 static u8   menu_idx               = CP;
-static bool timer_out_menu_enabled = 0;
+static bool timer_out_menu_enabled = false;
 
 static Error   error_flags = Error_None;
 static Mode    mode        = MODE_STOP;
@@ -337,7 +337,8 @@ static void init_io(void);
 static bool get_temp(Temp_Ctx *self);
 static void display_menu(u8 display1, u8 display2);
 static void handle_buttons(void);
-static void startup_alarm(void);
+static void start_alarm(void);
+static void stop_alarm(void);
 
 static inline void
 change_state(u8 new_state)
@@ -427,7 +428,7 @@ system_tick_init(void)
   {
 #if 1
     // Настройка таймера 1 в режиме Fast PWM, TOP = 0xFF
-    TCCR1A |= (1 << COM1A1) | (1 << WGM10);
+    TCCR1A |= (1 << WGM10);
     TCCR1B |= (1 << WGM12) | (1 << CS11); // Предделитель = 8
 
     // Установка начального значения для регистра сравнения (скважность)
@@ -494,7 +495,7 @@ main(void)
   do {
     if (!ow_reset()) {
       error_flags = Error_Temp_Sensor;
-      startup_alarm();
+      start_alarm();
     }
   } while (timer_expired_ext(&timer_ow_alarm, 0, SECONDS(1), 0, s_ticks));
 
@@ -505,7 +506,9 @@ main(void)
       if (timer_expired_ext(&timer_ow_alarm, SECONDS(5), 0, 0, s_ticks)) {
         if (!ow_reset()) {
           error_flags = Error_Temp_Sensor;
-          startup_alarm();
+          start_alarm();
+          timer_reset(&timer_ow_alarm);
+          continue;
         }
         timer_reset(&timer_ow_alarm);
       }
@@ -522,9 +525,12 @@ main(void)
         last_state = STATE_HOME;
       }
 
+      timer_out_menu_enabled = false;
       timer_reset(&timer_out_menu);
 
       display_enable = false;
+      gpio_write_low(&PORTB, PB3);
+      gpio_write_low(&PORTB, PB2);
       options_save();
       display_enable = true;
 
@@ -532,8 +538,6 @@ main(void)
       {
         OCR1A = (options.fan_speed.value - 0) * (255 - 0) / (99 - 0) + 0;
       }
-
-      timer_out_menu_enabled = false;
     }
 
     if (ow_reset()) {
@@ -544,6 +548,10 @@ main(void)
       if (options.sound_signal_enabled.value) {
         // ...
       }
+    }
+
+    if (last_state == STATE_ALARM) {
+      stop_alarm();
     }
 
     if (state != STATE_ALARM) {
@@ -558,9 +566,17 @@ main(void)
       if (state == STATE_HOME) {
         if (options.factory_settings.value == 1) {
           options_default();
+
           display_enable = false;
+          gpio_write_low(&PORTB, PB3);
+          gpio_write_low(&PORTB, PB2);
           options_save();
           display_enable = true;
+
+          // PWM
+          {
+            OCR1A = (options.fan_speed.value - 0) * (255 - 0) / (99 - 0) + 0;
+          }
         }
       }
 
@@ -571,7 +587,9 @@ main(void)
           if (timer_expired_ext(&timer_temp_alarm, SECONDS(5), 0, 0,
                                 s_ticks)) {
             error_flags = Error_High_Temperature;
-            startup_alarm();
+            start_alarm();
+            timer_reset(&timer_temp_alarm);
+            continue;
           }
         } else if (temp_ctx.temp < 90) {
           timer_reset(&timer_temp_alarm);
@@ -581,7 +599,9 @@ main(void)
           if (timer_expired_ext(&timer_controller_shutdown_temperature,
                                 MINUTES(5), 0, 0, s_ticks)) {
             error_flags = Error_Low_Temperature;
-            startup_alarm();
+            start_alarm();
+            timer_reset(&timer_controller_shutdown_temperature);
+            continue;
           }
         }
 
@@ -784,6 +804,7 @@ menu_button(u8 code, i8 value)
 
   if (button_pressed(code)) {
     timer_reset(&timer_out_menu);
+
     menu_idx
         = CLAMP(menu_idx + value == UINT8_MAX ? 0 : menu_idx + value, 0, 9);
   }
@@ -809,6 +830,7 @@ menu_parameters_button(u8 code, i8 value)
 
   if (button_pressed(code)) {
     timer_reset(&timer_out_menu);
+
     options_change_params(value);
   }
 
@@ -818,6 +840,7 @@ menu_parameters_button(u8 code, i8 value)
 
   if (button_down(code)) {
     timer_reset(&timer_out_menu);
+
     if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
       options_change_params(value);
     }
@@ -831,13 +854,13 @@ menu_change_temp_button(u8 code, i8 value)
 
   if (button_pressed(code)) {
     timer_reset(&timer_out_menu);
+
     option_temp_target.value
         = CLAMP(option_temp_target.value + value == UINT8_MAX
                     ? 0
                     : option_temp_target.value + value,
                 option_temp_target.min, option_temp_target.max);
     change_state(STATE_MENU_TEMP_CHANGE);
-    timer_out_menu_enabled = 1;
   }
 
   if (button_released(code)) {
@@ -846,6 +869,7 @@ menu_change_temp_button(u8 code, i8 value)
 
   if (button_down(code)) {
     timer_reset(&timer_out_menu);
+
     if (timer_expired_ext(&timer, 500, 0, 10, s_ticks)) {
       option_temp_target.value
           = CLAMP(option_temp_target.value + value == UINT8_MAX
@@ -868,26 +892,28 @@ handle_buttons(void)
   switch (state) {
   case STATE_HOME: {
     if (button_pressed(BUTTON_MENU)) {
-      timer_out_menu_enabled = 1;
-      leds_off();
-    } else if (button_released(BUTTON_MENU)) {
-      timer_out_menu_enabled = 0;
-
-      timer_reset(&timer_in_menu);
-
-      if (state != STATE_MENU) {
-        timer_reset(&timer_out_menu);
+      // timer_out_menu_enabled = true;
+      // timer_reset(&timer_out_menu);
+    } else if (button_down(BUTTON_MENU)) {
+      if (timer_expired_ext(&timer_in_menu, SECONDS(2), 0, 0, s_ticks)) {
+        change_state(STATE_MENU);
+        timer_reset(&timer_in_menu);
       }
+    } else if (button_released(BUTTON_MENU)) {
+      timer_reset(&timer_in_menu);
+      timer_reset(&timer_temp_alarm);
 
       if (last_state == STATE_HOME || last_state == STATE_ALARM) {
         if (mode == MODE_STOP) {
           mode = MODE_RASTOPKA;
           leds_off();
           leds_change(Leds_Rastopka, true);
+          fan_disable();
         } else if (mode != MODE_STOP) {
           mode = MODE_STOP;
           leds_off();
           leds_change(Leds_Stop, true);
+          fan_disable();
         }
         break;
       } else if (last_state == STATE_MENU_TEMP_CHANGE
@@ -898,18 +924,13 @@ handle_buttons(void)
       }
     }
 
-    if (button_down(BUTTON_MENU)) {
-      if (timer_expired_ext(&timer_in_menu, SECONDS(2), 0, 0, s_ticks)) {
-        change_state(STATE_MENU);
-        timer_reset(&timer_in_menu);
-      }
-    }
-
     menu_change_temp_button(BUTTON_UP, 1);
     menu_change_temp_button(BUTTON_DOWN, -1);
   } break;
 
   case STATE_MENU: {
+    timer_out_menu_enabled = true;
+
     if (button_pressed(BUTTON_MENU)) {
       timer_reset(&timer_out_menu);
       change_state(STATE_MENU_PARAMETERS);
@@ -932,8 +953,10 @@ handle_buttons(void)
   } break;
 
   case STATE_MENU_TEMP_CHANGE: {
+    timer_out_menu_enabled = true;
+
     if (button_pressed(BUTTON_MENU)) {
-      timer_out_menu_enabled = 0;
+      timer_out_menu_enabled = false;
       timer_reset(&timer_out_menu);
       change_state(STATE_HOME);
       options_save();
@@ -946,8 +969,7 @@ handle_buttons(void)
 
   case STATE_ALARM: {
     if (button_released(BUTTON_MENU)) {
-      error_flags = Error_None;
-      change_state(STATE_HOME);
+      stop_alarm();
 
       // disable sound alarm
       {
@@ -960,7 +982,7 @@ handle_buttons(void)
 }
 
 void
-startup_alarm(void)
+start_alarm(void)
 {
   mode = MODE_STOP;
   change_state(STATE_ALARM);
@@ -973,9 +995,25 @@ startup_alarm(void)
   timer_reset(&timer_menu);
   timer_reset(&timer_temp_alarm);
   timer_reset(&timer_ow_alarm);
+  timer_reset(&timer_in_menu);
   timer_reset(&timer_out_menu);
   timer_out_menu_enabled = false;
   display_enable         = true;
+}
+
+void
+stop_alarm(void)
+{
+  error_flags = Error_None;
+  mode        = MODE_STOP;
+  change_state(STATE_HOME);
+
+  leds_change(Leds_Stop, true);
+  leds_change(Leds_Rastopka, false);
+  leds_change(Leds_Control, false);
+  leds_change(Leds_Alarm, false);
+  leds_change(Leds_Pump, false);
+  leds_change(Leds_Fan, false);
 }
 
 void
