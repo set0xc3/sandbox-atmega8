@@ -324,6 +324,7 @@ static Error   error_flags = Error_None;
 static Mode    mode        = MODE_STOP;
 static State   last_state, state = STATE_HOME;
 static Options options;
+static Option  current_option1, current_option2;
 static Option  option_temp_target;
 
 // Temp
@@ -434,7 +435,7 @@ system_tick_init(void)
     // Установка начального значения для регистра сравнения (скважность)
     OCR1A = 255;
 
-    gpio_set_mode_output(&DDRB, PB1);
+    gpio_set_mode_output(&PIN_FAN_DDR, PIN_FAN);
 #endif
   }
 
@@ -451,7 +452,7 @@ system_tick_init(void)
 }
 
 static inline void
-fan_enable(void)
+fan_start(void)
 {
   leds_change(Leds_Control, false);
   leds_change(Leds_Rastopka, true);
@@ -462,7 +463,7 @@ fan_enable(void)
 }
 
 static inline void
-fan_disable(void)
+fan_stop(void)
 {
   leds_change(Leds_Fan, false);
 
@@ -493,24 +494,53 @@ main(void)
   options_load();
 
   do {
+    static u8 rep = 0;
     if (!ow_reset()) {
-      error_flags = Error_Temp_Sensor;
-      start_alarm();
+      if (timer_expired_ext(&timer_ow_alarm, SECONDS(1), 0, 0, s_ticks)) {
+        if (rep >= 5) {
+          rep = 0;
+          if (!ow_reset()) {
+            error_flags = Error_Temp_Sensor;
+            start_alarm();
+            timer_reset(&timer_ow_alarm);
+          }
+        }
+        rep -= 1;
+      }
+    } else {
+      rep = 0;
+      timer_reset(&timer_ow_alarm);
     }
+
   } while (timer_expired_ext(&timer_ow_alarm, 0, SECONDS(1), 0, s_ticks));
 
   timer_reset(&timer_ow_alarm);
 
   for (;;) {
-    if (!ow_reset()) {
-      if (timer_expired_ext(&timer_ow_alarm, SECONDS(5), 0, 0, s_ticks)) {
-        if (!ow_reset()) {
-          error_flags = Error_Temp_Sensor;
-          start_alarm();
-          timer_reset(&timer_ow_alarm);
-          continue;
+    if (timer_expired_ext(&timer_ow_alarm, 0, 0, SECONDS(1), s_ticks)) {
+      static u8 rep = 0;
+      if (!ow_reset() && state != STATE_ALARM) {
+        if (rep >= 5) {
+          rep = 0;
+          if (!ow_reset()) {
+            error_flags = Error_Temp_Sensor;
+            start_alarm();
+            timer_reset(&timer_ow_alarm);
+          }
         }
+        rep -= 1;
+      } else {
+        rep = 0;
         timer_reset(&timer_ow_alarm);
+      }
+    }
+
+    {
+      static Timer32 timer;
+      if (timer_expired_ext(&timer, 0, 0, 10, s_ticks)) {
+        handle_buttons();
+        current_option1.value = options.e[menu_idx].value % 100 / 10;
+        current_option2.value = options.e[menu_idx].value % 10;
       }
     }
 
@@ -538,17 +568,16 @@ main(void)
       }
     }
 
-    if (ow_reset()) {
-      get_temp(&temp_ctx);
-    }
+    get_temp(&temp_ctx);
 
+#if 1
     if (state == STATE_ALARM) {
       if (options.sound_signal_enabled.value) {
         // ...
       }
     }
 
-    if (last_state == STATE_ALARM) {
+    if (state == STATE_HOME && last_state == STATE_ALARM) {
       stop_alarm();
     }
 
@@ -612,7 +641,7 @@ main(void)
           // Вентилятор начнет работу в ручном режиме.
           mode = MODE_RASTOPKA;
 
-          fan_enable();
+          fan_start();
 
           timer_reset(&timer_cp);
           timer_reset(&timer_pp);
@@ -635,12 +664,12 @@ main(void)
               if (timer_expired_ext(
                       &timer_cp, 0, SECONDS(options.fan_work_duration.value),
                       SECONDS(options.fan_work_duration.value), s_ticks)) {
-                fan_enable();
+                fan_start();
               } else {
-                fan_disable();
+                fan_stop();
               }
             } else {
-              fan_disable();
+              fan_stop();
             }
           } else if (temp_ctx.temp
                      <= option_temp_target.value - options.hysteresis.value) {
@@ -656,9 +685,9 @@ main(void)
             if (timer_expired_ext(
                     &timer_cp, 0, SECONDS(options.fan_work_duration.value),
                     SECONDS(options.fan_work_duration.value), s_ticks)) {
-              fan_enable();
+              fan_start();
             } else {
-              fan_disable();
+              fan_stop();
             }
           }
         }
@@ -670,17 +699,19 @@ main(void)
         }
       }
     }
+#endif
 
-    handle_buttons();
-
-    leds_display(Leds_Stop);
-    leds_display(Leds_Rastopka);
-    leds_display(Leds_Control);
-    leds_display(Leds_Alarm);
-    leds_display(Leds_Pump);
-    leds_display(Leds_Fan);
-
-    delay_ms(1);
+    {
+      static Timer32 timer;
+      if (timer_expired_ext(&timer, 0, 0, SECONDS(1), s_ticks)) {
+        leds_display(Leds_Stop);
+        leds_display(Leds_Rastopka);
+        leds_display(Leds_Control);
+        leds_display(Leds_Alarm);
+        leds_display(Leds_Pump);
+        leds_display(Leds_Fan);
+      }
+    }
   }
 
   return 0;
@@ -734,7 +765,7 @@ get_temp(Temp_Ctx *self)
   } break;
 
   case Temp_Step_Read: {
-    if (timer_expired_ext(&self->timer, 1000, 0, 0, s_ticks)) {
+    if (timer_expired_ext(&self->timer, SECONDS(1), 0, 0, s_ticks)) {
       if (ow_reset()) {
         u8 crc = 0;
         u8 scratchpad[8];
@@ -785,18 +816,18 @@ display_menu(u8 display1, u8 display2)
   case 0:
     gpio_write_low(&PORTB, PB3);
     gpio_write_height(&PORTB, PB2);
-    PORTD = ~(display2);
+    PORTD       = ~(display2);
+    display_idx = 1;
     break;
   case 1:
     gpio_write_low(&PORTB, PB2);
     gpio_write_height(&PORTB, PB3);
-    PORTD = ~(display1);
+    PORTD       = ~(display1);
+    display_idx = 0;
     break;
   default:
     break;
   }
-
-  display_idx = (display_idx + 1) % 2;
 }
 
 void
@@ -910,12 +941,12 @@ handle_buttons(void)
           mode = MODE_RASTOPKA;
           leds_off();
           leds_change(Leds_Rastopka, true);
-          fan_disable();
+          fan_stop();
         } else if (mode != MODE_STOP) {
           mode = MODE_STOP;
           leds_off();
           leds_change(Leds_Stop, true);
-          fan_disable();
+          fan_stop();
         }
         break;
       } else if (last_state == STATE_MENU_TEMP_CHANGE
@@ -1004,6 +1035,7 @@ start_alarm(void)
   timer_reset(&timer_ow_alarm);
   timer_reset(&timer_in_menu);
   timer_reset(&timer_out_menu);
+  fan_stop();
   timer_out_menu_enabled = false;
   display_enable         = true;
 }
@@ -1052,6 +1084,7 @@ options_change_params(i8 value)
 void
 options_save(void)
 {
+  return;
   uint16_t eeprom_pos = sizeof(uint8_t);
 
   interrupts_disable();
@@ -1076,6 +1109,7 @@ options_save(void)
 void
 options_load(void)
 {
+  return;
   // uint16_t i;
   // for (i = 0; i < 512; i++) {
   //   eeprom_write_byte((uint8_t *)i, 0);
@@ -1274,34 +1308,43 @@ leds_change(Leds led, bool enable)
 
 ISR(TIMER0_OVF_vect)
 {
-  switch (state) {
-  case STATE_HOME:
-    display_menu(display_segment_numbers[temp_ctx.temp % 100 / 10],
-                 display_segment_numbers[temp_ctx.temp % 10]);
-    break;
-  case STATE_ALARM:
-    if (error_flags == Error_Temp_Sensor) {
-      display_menu(display_segment_numbers[10], display_segment_numbers[10]);
-    } else {
+  static u8 ticks = 0;
+
+  if (ticks >= 4) {
+    ticks = 0;
+
+    switch (state) {
+    case STATE_HOME:
       display_menu(display_segment_numbers[temp_ctx.temp % 100 / 10],
                    display_segment_numbers[temp_ctx.temp % 10]);
+      break;
+    case STATE_ALARM:
+      if (error_flags == Error_Temp_Sensor) {
+        display_menu(display_segment_numbers[10], display_segment_numbers[10]);
+      } else {
+        display_menu(display_segment_numbers[temp_ctx.temp % 100 / 10],
+                     display_segment_numbers[temp_ctx.temp % 10]);
+      }
+      break;
+    case STATE_MENU_TEMP_CHANGE:
+      display_menu(
+          display_segment_numbers[option_temp_target.value % 100 / 10],
+          display_segment_numbers[option_temp_target.value % 10]);
+      break;
+    case STATE_MENU:
+      display_menu(display_segment_menu[menu_idx][0],
+                   display_segment_menu[menu_idx][1]);
+      break;
+    case STATE_MENU_PARAMETERS:
+      display_menu(display_segment_numbers[current_option1.value],
+                   display_segment_numbers[current_option2.value]);
+      break;
+    default:
+      break;
     }
-    break;
-  case STATE_MENU_TEMP_CHANGE:
-    display_menu(display_segment_numbers[option_temp_target.value % 100 / 10],
-                 display_segment_numbers[option_temp_target.value % 10]);
-    break;
-  case STATE_MENU:
-    display_menu(display_segment_menu[menu_idx][0],
-                 display_segment_menu[menu_idx][1]);
-    break;
-  case STATE_MENU_PARAMETERS:
-    display_menu(display_segment_numbers[options.e[menu_idx].value % 100 / 10],
-                 display_segment_numbers[options.e[menu_idx].value % 10]);
-    break;
-  default:
-    break;
   }
+
+  ticks += 1;
 }
 
 ISR(TIMER2_COMP_vect) { s_ticks += 1; }
