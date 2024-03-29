@@ -514,8 +514,6 @@ main(void)
       }
     }
 
-    handle_buttons();
-
     if (timer_out_menu_enabled
         && timer_expired_ext(&timer_out_menu, SECONDS(5), 0, 0, s_ticks)
         && state != STATE_HOME) {
@@ -673,12 +671,16 @@ main(void)
       }
     }
 
+    handle_buttons();
+
     leds_display(Leds_Stop);
     leds_display(Leds_Rastopka);
     leds_display(Leds_Control);
     leds_display(Leds_Alarm);
     leds_display(Leds_Pump);
     leds_display(Leds_Fan);
+
+    delay_ms(1);
   }
 
   return 0;
@@ -959,7 +961,7 @@ handle_buttons(void)
       timer_out_menu_enabled = false;
       timer_reset(&timer_out_menu);
       change_state(STATE_HOME);
-      
+
       display_enable = false;
       gpio_write_low(&PORTB, PB3);
       gpio_write_low(&PORTB, PB2);
