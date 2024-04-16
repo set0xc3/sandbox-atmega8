@@ -2,65 +2,37 @@
 #include <stdint.h>
 #include <string.h>
 
-#define F_CPU 1000000UL
-
 #include <avr/interrupt.h>
 #include <avr/io.h>
 #include <util/delay.h>
 
-static inline void
-interrupts_enable(void)
-{
-  sei();
-}
+static inline void interrupts_enable(void) { sei(); }
 
-static inline void
-interrupts_disable(void)
-{
-  cli();
-}
+static inline void interrupts_disable(void) { cli(); }
 
-static inline void
-delay_us(uint32_t value)
-{
-  _delay_us(value);
-}
+static inline void delay_us(uint32_t value) { _delay_us(value); }
 
-static inline void
-delay_ms(uint32_t value)
-{
-  _delay_ms(value);
-}
+static inline void delay_ms(uint32_t value) { _delay_ms(value); }
 
 // GPIO
 
-static inline void
-gpio_set_mode_input(volatile uint8_t *port, uint8_t pin)
-{
+static inline void gpio_set_mode_input(volatile uint8_t *port, uint8_t pin) {
   *port &= ~(1 << pin);
 }
 
-static inline void
-gpio_set_mode_output(volatile uint8_t *port, uint8_t pin)
-{
+static inline void gpio_set_mode_output(volatile uint8_t *port, uint8_t pin) {
   *port |= (1 << pin);
 }
 
-static inline void
-gpio_write_low(volatile uint8_t *port, uint8_t pin)
-{
+static inline void gpio_write_low(volatile uint8_t *port, uint8_t pin) {
   *port &= ~(1 << pin);
 }
 
-static inline void
-gpio_write_height(volatile uint8_t *port, uint8_t pin)
-{
+static inline void gpio_write_height(volatile uint8_t *port, uint8_t pin) {
   *port |= (1 << pin);
 }
 
-static inline uint8_t
-gpio_read(volatile uint8_t *port, uint8_t pin)
-{
+static inline uint8_t gpio_read(volatile uint8_t *port, uint8_t pin) {
   return *port & (1 << pin);
 }
 
@@ -70,27 +42,20 @@ gpio_read(volatile uint8_t *port, uint8_t pin)
 #define MINUTES(value) ((uint32_t)value * 60UL * 1000UL)
 
 typedef struct Timer32 {
-  bool     wait_done, sleep_pending;
+  bool wait_done, sleep_pending;
   uint32_t ticks;
 } Timer32;
 
 static volatile uint32_t s_ticks;
 
-static inline uint32_t
-get_ticks(void)
-{
-  return s_ticks;
-}
+static inline uint32_t get_ticks(void) { return s_ticks; }
 
-static inline void
-timer_reset(Timer32 *timer)
-{
+static inline void timer_reset(Timer32 *timer) {
   memset(timer, 0, sizeof(Timer32));
 }
 
-static inline bool
-timer_expired(uint32_t *ticks, uint32_t period, uint32_t now_ticks)
-{
+static inline bool timer_expired(uint32_t *ticks, uint32_t period,
+                                 uint32_t now_ticks) {
   if (ticks == 0) {
     return false;
   }
@@ -109,10 +74,9 @@ timer_expired(uint32_t *ticks, uint32_t period, uint32_t now_ticks)
   return true;
 }
 
-static inline bool
-timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
-                  uint32_t sleep_duration, uint32_t now_ticks)
-{
+static inline bool timer_expired_ext(Timer32 *self, uint32_t wait,
+                                     uint32_t period, uint32_t sleep_duration,
+                                     uint32_t now_ticks) {
   if (self == 0) {
     return false;
   }
@@ -129,7 +93,7 @@ timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
     }
 
     self->wait_done = true;
-    self->ticks     = now_ticks + period;
+    self->ticks = now_ticks + period;
   }
 
   // Засыпание
@@ -137,7 +101,7 @@ timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
     return false;
   } else if (self->sleep_pending) {
     self->sleep_pending = false;
-    self->ticks         = now_ticks + period;
+    self->ticks = now_ticks + period;
   }
 
   // Работа
@@ -146,16 +110,14 @@ timer_expired_ext(Timer32 *self, uint32_t wait, uint32_t period,
   }
 
   self->sleep_pending = true;
-  self->ticks         = now_ticks + sleep_duration;
+  self->ticks = now_ticks + sleep_duration;
 
   return false;
 }
 
 // System
 
-static inline void
-system_tick_init(void)
-{
+static inline void system_tick_init(void) {
   // устанавливаем режим СТС (сброс по совпадению)
   TCCR1B |= (1 << WGM12);
 
@@ -176,9 +138,7 @@ system_tick_init(void)
 
 ISR(TIMER1_COMPA_vect) { s_ticks += 1; }
 
-int
-main(void)
-{
+int main(void) {
   system_tick_init();
 
   gpio_set_mode_output(&DDRC, PC0);
