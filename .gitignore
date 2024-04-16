@@ -1,5 +1,7 @@
+.cache
 .direnv
 .vscode
 
 *.elf
-*.hex
+*.bin
+compile_commands.json
